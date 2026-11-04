@@ -39,6 +39,21 @@ def _finite(value: Any, default: float = 0.0) -> float:
     return parsed if math.isfinite(parsed) else default
 
 
+def _published_consumption(interval: Any) -> float:
+    """Demand to publish, independent of whether the battery may discharge.
+
+    The planner zeroes ``consumption_kwh`` on intervals where a price block or a
+    no-discharge window stops the battery, because that interval drains nothing.
+    The household demand does not disappear with it, so the published forecast
+    reads the demand the interval carries instead.  Intervals that were never
+    blocked report the same value either way.
+    """
+    demand = getattr(interval, "demand_kwh", None)
+    if demand is None:
+        demand = getattr(interval, "consumption_kwh", 0.0)
+    return _finite(demand)
+
+
 @dataclass(frozen=True)
 class DailyOperationProjectionRequest:
     """Read-only inputs needed to materialize a Daily Operation projection."""
@@ -180,7 +195,7 @@ def build_daily_operation_projection(
     full_forecasts = [
         (
             _finite(getattr(interval, "solar_kwh", 0.0)),
-            _finite(getattr(interval, "consumption_kwh", 0.0)),
+            _published_consumption(interval),
         )
         for interval, _remaining_start, _remaining_ratio in remaining_intervals
     ]

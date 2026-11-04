@@ -24,6 +24,12 @@ class EnergyInterval:
     end: datetime
     consumption_kwh: float
     solar_kwh: float
+    # Household demand this interval actually carries.  ``consumption_kwh`` is
+    # zeroed when the battery is blocked from discharging (price-based control,
+    # no-discharge windows) so the planner projects no drain there.  The house
+    # still consumes, so the published forecast reads this instead.  ``None``
+    # means the two are the same.
+    demand_kwh: float | None = None
 
     def __post_init__(self) -> None:
         if self.end <= self.start:
@@ -32,6 +38,10 @@ class EnergyInterval:
             value = float(getattr(self, name))
             if not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} must be finite and non-negative")
+        if self.demand_kwh is not None:
+            value = float(self.demand_kwh)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError("demand_kwh must be finite and non-negative")
 
 
 @dataclass(frozen=True)

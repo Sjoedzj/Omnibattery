@@ -203,6 +203,24 @@ def _apply_excluded_demand_claim(
     return adjusted, claim
 
 
+def _battery_blocked_interval(item: EnergyInterval) -> EnergyInterval:
+    """Return ``item`` with its projected drain removed but its demand kept.
+
+    ``consumption_kwh`` drives the discharge simulation and the depletion
+    deadlines, so a blocked interval must report zero there: a battery that may
+    not discharge drains nothing, and a deadline computed as if it did would
+    book a charge the battery never needs.  The household still consumes,
+    though, and the published forecast has to say so, so the true demand rides
+    along in ``demand_kwh``.
+
+    Chained safely: the no-discharge-window pass may already have blocked the
+    interval, in which case ``consumption_kwh`` is 0 and ``demand_kwh`` holds the
+    demand that must survive this second pass too.
+    """
+    demand = item.demand_kwh if item.demand_kwh is not None else item.consumption_kwh
+    return EnergyInterval(item.start, item.end, 0.0, item.solar_kwh, demand)
+
+
 @dataclass(frozen=True)
 class ChronologicalProjectionResult:
     """Read-only dashboard projection adapted from current runtime inputs.
@@ -2886,7 +2904,7 @@ class PricingManager:
             ]
             if fleet_blocks:
                 intervals = [
-                    EnergyInterval(item.start, item.end, 0.0, item.solar_kwh)
+                    _battery_blocked_interval(item)
                     if any(
                         self._future_slot_matches_operation_block(item, block)
                         for block in fleet_blocks
@@ -2919,7 +2937,7 @@ class PricingManager:
                     if slot.price <= price_block
                 ]
                 intervals = [
-                    EnergyInterval(item.start, item.end, 0.0, item.solar_kwh)
+                    _battery_blocked_interval(item)
                     if any(
                         wall(slot.start) <= wall(item.start) < wall(slot.end)
                         for slot in blocked
