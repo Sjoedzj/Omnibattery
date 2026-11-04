@@ -122,6 +122,12 @@ MAX_TEXT_LENGTH = 128
 MAX_METADATA_ITEMS = 8
 MAX_DECISION_EVENTS_PER_CELL = 8
 POWER_DEADBAND_W = 10.0
+# Energy a flow must carry before it colours a whole quarter. ``_EPSILON`` is a
+# numerical guard, not a display one: three watt-hours of spill at a quarter
+# boundary is three million times larger, so it painted an entire cell as a full
+# grid charge. 0.01 kWh over a quarter is a 40 W average, which is the same kind
+# of "nothing" ``POWER_DEADBAND_W`` already means at the power level.
+_ACTION_ENERGY_DEADBAND_KWH = 0.01
 _EPSILON = 1e-9
 
 _ACTION_NAMES = {
@@ -1674,7 +1680,7 @@ class DailyOperationTimelineManager:
         ):
             if any(
                 (parsed := _finite_non_negative(mapping.get(key))) is not None
-                and parsed > _EPSILON
+                and parsed > _ACTION_ENERGY_DEADBAND_KWH
                 for key in keys
             ):
                 mask |= bit
@@ -1847,7 +1853,7 @@ class DailyOperationTimelineManager:
                 parsed
                 for key in ("solar_to_battery_kwh", "pv_to_battery_kwh", "solar_excess_kwh")
                 if (parsed := _finite_non_negative(mapping.get(key))) is not None
-                and parsed > _EPSILON
+                and parsed > _ACTION_ENERGY_DEADBAND_KWH
             ),
             0.0,
         )
@@ -1856,7 +1862,7 @@ class DailyOperationTimelineManager:
                 parsed
                 for key in ("grid_to_battery_kwh", "grid_charge_kwh")
                 if (parsed := _finite_non_negative(mapping.get(key))) is not None
-                and parsed > _EPSILON
+                and parsed > _ACTION_ENERGY_DEADBAND_KWH
             ),
             0.0,
         )
@@ -1865,18 +1871,18 @@ class DailyOperationTimelineManager:
                 parsed
                 for key in ("battery_to_home_kwh", "battery_discharge_kwh")
                 if (parsed := _finite_non_negative(mapping.get(key))) is not None
-                and parsed > _EPSILON
+                and parsed > _ACTION_ENERGY_DEADBAND_KWH
             ),
             0.0,
         )
         if parsed_action_mask == ACTION_NONE:
-            if solar_to_battery and solar_to_battery > _EPSILON:
+            if solar_to_battery and solar_to_battery > _ACTION_ENERGY_DEADBAND_KWH:
                 parsed_action_mask |= ACTION_SOLAR_CHARGE
-            if grid_to_battery and grid_to_battery > _EPSILON:
+            if grid_to_battery and grid_to_battery > _ACTION_ENERGY_DEADBAND_KWH:
                 parsed_action_mask |= ACTION_GRID_CHARGE
             if (
                 (discharge_power is not None and discharge_power > POWER_DEADBAND_W)
-                or (battery_to_home and battery_to_home > _EPSILON)
+                or (battery_to_home and battery_to_home > _ACTION_ENERGY_DEADBAND_KWH)
             ):
                 parsed_action_mask |= ACTION_DISCHARGE
             if (
@@ -2398,7 +2404,7 @@ class DailyOperationTimelineManager:
                 )
                 for field_name, bit in flow_fields:
                     flow = _finite_non_negative(item_value(field_name, default=None))
-                    if flow is not None and flow > _EPSILON:
+                    if flow is not None and flow > _ACTION_ENERGY_DEADBAND_KWH:
                         action_mask |= bit
                 cell.planned_action_mask = action_mask
                 context_value = item_value("planned_context_mask", "context_mask", default=None)
