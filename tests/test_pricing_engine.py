@@ -1197,6 +1197,65 @@ def test_evening_recharge_picks_informational_slots_on_price_and_arms_only_those
     assert schedule.deficit_charging_needed is True
 
 
+def test_evening_recharge_refuses_slots_that_cannot_earn_the_arbitrage_margin(monkeypatch):
+    # An already-empty battery has no cheap hour left ahead of its depletion
+    # deadline, so the cheapest remaining slots are tonight's peak. Buying there
+    # costs more than importing at that same moment, so the margin gate the
+    # deficit path already applies has to stop it here too.
+    import datetime as datetime_module
+
+    now = datetime(2026, 9, 16, 8, 30)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    monkeypatch.setattr(datetime_module, "datetime", FixedDateTime)
+    monkeypatch.setattr(pricing_engine.calculations, "datetime", FixedDateTime)
+
+    def _slot(hour, price):
+        start = now.replace(hour=hour, minute=0)
+        return PriceSlot(start, start + timedelta(hours=1), price)
+
+    evening, late = _slot(18, 0.51), _slot(19, 0.49)
+
+    def _run(**overrides):
+        schedule = SimpleNamespace(
+            selected_slots=[],
+            slot_purposes={},
+            charging_needed=False,
+            deficit_charging_needed=False,
+        )
+        ctrl = _evening_ctrl(
+            claim=0.0,
+            remaining_solar=0.0,
+            _dynamic_pricing_schedule=schedule,
+            max_contracted_power=3000,
+            max_charge_capacity=3000,
+            **overrides,
+        )
+        manager = _evening_mgr(ctrl, 0.0)
+        manager._parse_price_data = lambda horizon_end=None, **_kwargs: [evening, late]
+        manager._send_evening_recharge_notification = _async_noop
+
+        asyncio.run(manager._evaluate_evening_recharge())
+        return schedule
+
+    # Gate off (margin unset): the price-only selection arms the cheapest slot,
+    # however dear it is. This is the behaviour the fix must not change.
+    armed = _run()
+    assert armed.selected_slots
+    assert late in armed.selected_slots
+    assert armed.deficit_charging_needed is True
+
+    # Gate on: 0.50 * 0.85 - 0.05 = 0.375, so neither slot can pay for itself
+    # and no charge may be armed at all.
+    refused = _run(min_arbitrage_margin=0.05)
+    assert refused.selected_slots == []
+    assert refused.deficit_charging_needed is False
+
+
 def test_dynamic_pricing_soc_drop_rebuilds_the_remaining_horizon():
     # #472: a SOC drop is a full re-plan, not the deadline-blind evening top-up.
     calls = []

@@ -5077,6 +5077,29 @@ class PricingManager:
             self._contracted_charge_ceiling(),
             self._controller.max_charge_capacity,
         )
+        # The same gate the deficit path applies (see the 00:05 evaluation). An
+        # evening top-up is an economic decision: it has to clear the arbitrage
+        # margin against the dearest hours it means to displace. Without it, the
+        # cheapest slots still ahead of an already-empty battery are tonight's
+        # peak, and the battery buys energy at a price it can never earn back.
+        # `slots` is the unfiltered horizon here, which is what the estimate
+        # needs: the expensive hours sit above any static ceiling by definition.
+        # Read both gate settings defensively. A controller built before the
+        # margin existed carries neither attribute, and a missing margin means
+        # the gate is off, which is the conservative direction.
+        ceiling, arb_ceiling = calculations.effective_charge_ceiling(
+            slots,
+            hours_needed,
+            self._controller.max_price_threshold,
+            getattr(self._controller, "min_arbitrage_margin", None),
+            getattr(
+                self._controller,
+                "round_trip_efficiency",
+                calculations.DEFAULT_ROUND_TRIP_EFFICIENCY,
+            ),
+            now=now,
+        )
+        self._controller._dp_arbitrage_ceiling = arb_ceiling
         decision_data["should_charge"] = True
         decision_data["energy_deficit_kwh"] = evening_deficit_kwh
         decision_data["planned_grid_charge_kwh"] = planned_evening_charge_kwh
@@ -5084,8 +5107,22 @@ class PricingManager:
             now=now,
             slots=slots,
             decision_data=decision_data,
-            price_ceiling=self._controller.max_price_threshold,
+            price_ceiling=ceiling,
         )
+        if (
+            chronological_plan is not None
+            and decision_data.get("floor_active", False)
+        ):
+            # Guaranteed-floor energy is not an optimisation, so the arbitrage
+            # margin must not block it; only the user's explicit ceiling stays
+            # authoritative. Mirrors the deficit path (engine.py:3600-3608).
+            ceiling = self._controller.max_price_threshold
+            chronological_plan = self._build_chronological_plan(
+                now=now,
+                slots=slots,
+                decision_data=decision_data,
+                price_ceiling=ceiling,
+            )
         if chronological_plan is not None:
             selected = [
                 allocation.slot
@@ -5098,7 +5135,7 @@ class PricingManager:
             selected = calculations.select_cheapest_hours(
                 additional_slots,
                 hours_needed,
-                self._controller.max_price_threshold,
+                ceiling,
             )
 
         if not selected:
