@@ -318,3 +318,158 @@ def test_discharge_reserve_remainder_is_recorded_and_the_lists_are_not():
 
     assert "usable_above_reserve_kwh" not in unrecorded
     assert {"claims", "reserved_slots"}.issubset(unrecorded)
+
+
+# --- What the remainder actually is ---------------------------------------
+#
+# ``usable_above_reserve_kwh`` used to stand alone, which read as a fleet-wide
+# energy band. It is neither: it is computed on the counted capacity only, and
+# once every usable kWh is claimed it is not a quantity of its own at all. The
+# tests below pin the two figures that make that visible in the state.
+
+
+def test_discharge_reserve_names_the_capacity_the_kwh_figures_rest_on():
+    """One battery of two is counted, so the band halves; say so in the state."""
+    attrs = _reserve_attrs(
+        {
+            "state": "reserving",
+            "reason": "reserved_for_dearer_hours",
+            "reserve_soc_pct": 8.46,
+            "reserve_kwh": 0.432,
+            "usable_energy_kwh": 0.865,
+            "total_capacity_kwh": 5.12,
+            "claimed_kwh": 0.865,
+            "pv_credit_kwh": 0.433,
+        }
+    )
+
+    assert attrs["counted_capacity_kwh"] == 5.12
+    assert attrs["usable_above_reserve_kwh"] == 0.433
+
+
+def test_discharge_reserve_remainder_is_the_pv_credit_once_everything_is_claimed():
+    """Saturated: reserve_kwh = usable - pv_credit, so the remainder is the sun."""
+    usable, credit = 0.865, 0.433
+    claimed = usable
+    attrs = _reserve_attrs(
+        {
+            "state": "reserving",
+            "reason": "reserved_for_dearer_hours",
+            "reserve_soc_pct": 8.46,
+            "total_capacity_kwh": 5.12,
+            "usable_energy_kwh": usable,
+            "claimed_kwh": claimed,
+            # What the manager publishes: claimed_kwh minus pv_credit_kwh.
+            "reserve_kwh": round(claimed - credit, 3),
+            "pv_credit_kwh": credit,
+        }
+    )
+
+    assert attrs["usable_above_reserve_kwh"] == credit
+    assert attrs["usable_above_reserve_is_pv_credit"] is True
+
+
+def test_discharge_reserve_remainder_is_more_than_the_pv_credit_while_unsatisfied():
+    """Below saturation the remainder is energy of its own, so the flag is off."""
+    attrs = _reserve_attrs(
+        {
+            "state": "reserving",
+            "reason": "reserved_for_dearer_hours",
+            "reserve_soc_pct": 40.0,
+            "usable_energy_kwh": 10.0,
+            "claimed_kwh": 4.0,
+            "reserve_kwh": 4.0,
+            "pv_credit_kwh": 0.0,
+        }
+    )
+
+    assert attrs["usable_above_reserve_kwh"] == 6.0
+    assert attrs["usable_above_reserve_is_pv_credit"] is False
+
+
+def test_discharge_reserve_omits_the_basis_and_the_flag_without_a_plan():
+    attrs = _reserve_attrs(
+        {"state": "released", "reason": "no_plan", "reserve_soc_pct": 0.0}
+    )
+
+    assert "counted_capacity_kwh" not in attrs
+    assert "usable_above_reserve_is_pv_credit" not in attrs
+
+
+def test_discharge_reserve_publishes_the_enforced_floor_per_battery():
+    """The controller blocks on min_soc + reserve points, per battery."""
+    controller = SimpleNamespace(
+        discharge_reserve_enabled=True,
+        discharge_reserve_min_saving=0.1,
+        _discharge_reserve_mgr=SimpleNamespace(get_status=lambda: {}),
+        get_battery_discharge_blockers=lambda: {
+            "battery-1": {
+                "price_reserve": {
+                    "reason": "price_reserve",
+                    "details": {
+                        "battery": "battery-1",
+                        "soc": 42.5,
+                        "min_soc": 10.0,
+                        "reserved_floor": 50.0,
+                        "reserve_soc_pct": 40.0,
+                    },
+                    "since": "2026-08-17T18:00:00+00:00",
+                }
+            },
+            # A block of another kind, and one without a numeric floor: neither
+            # belongs in the per-battery reserve floor.
+            "battery-2": {"cell_balance": {"details": {"cell": 3}}},
+            "battery-3": {"price_reserve": {"details": {"reserved_floor": None}}},
+        },
+    )
+
+    attrs = DischargeReserveSensor(None, None, controller).extra_state_attributes
+
+    assert attrs["reserved_floor_pct_by_battery"] == {"battery-1": 50.0}
+
+
+def test_discharge_reserve_floors_are_omitted_without_a_price_reserve_block():
+    """A battery above its floor carries no block, so there is no floor to show."""
+    attrs = _reserve_attrs(
+        {
+            "state": "reserving",
+            "reason": "reserved_for_dearer_hours",
+            "reserve_soc_pct": 8.46,
+            "usable_energy_kwh": 0.865,
+            "reserve_kwh": 0.432,
+            "total_capacity_kwh": 5.12,
+        }
+    )
+
+    assert "reserved_floor_pct_by_battery" not in attrs
+
+
+def test_discharge_reserve_floors_never_raise_from_the_blocker_read():
+    """Diagnostics must not take the entity down with the registry."""
+
+    def _boom():
+        raise RuntimeError("registry unavailable")
+
+    controller = SimpleNamespace(
+        discharge_reserve_enabled=True,
+        discharge_reserve_min_saving=0.1,
+        _discharge_reserve_mgr=SimpleNamespace(get_status=lambda: {}),
+        get_battery_discharge_blockers=_boom,
+    )
+
+    attrs = DischargeReserveSensor(None, None, controller).extra_state_attributes
+
+    assert "reserved_floor_pct_by_battery" not in attrs
+
+
+def test_discharge_reserve_small_new_figures_stay_recorded():
+    """The new figures are scalars and one short map, so they belong in history."""
+    unrecorded = DischargeReserveSensor._unrecorded_attributes
+
+    assert {
+        "counted_capacity_kwh",
+        "usable_above_reserve_is_pv_credit",
+        "reserved_floor_pct_by_battery",
+    }.isdisjoint(unrecorded)
+    # Only the two per-slot lists are excluded, and nothing was added here.
+    assert unrecorded == frozenset({"reserved_slots", "claims"})

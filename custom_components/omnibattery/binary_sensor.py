@@ -299,6 +299,14 @@ class DischargeReserveSensor(BinarySensorEntity):
     ``on`` means part of the stored energy is being kept back because a dearer
     hour is still ahead today. The reserve itself is published as
     ``reserve_soc_pct``: everything above it stays available right now.
+
+    Every kWh figure here rests on the *counted* fleet: the batteries the
+    reserve was sized against, which ``counted_capacity_kwh`` names. A battery
+    outside the eligibility filters keeps its energy but neither carries nor
+    releases any of the reserve, so the fleet total can be larger than the
+    counted one and the same reserve percentage is fewer kWh on the record
+    than on the fleet. ``reserved_floor_pct_by_battery`` shows the floor the
+    controller actually blocks on, per battery.
     """
 
     _unrecorded_attributes = frozenset({"reserved_slots", "claims"})
@@ -319,6 +327,32 @@ class DischargeReserveSensor(BinarySensorEntity):
     def _status(self) -> dict:
         manager = getattr(self.controller, "_discharge_reserve_mgr", None)
         return manager.get_status() if manager is not None else {}
+
+    def _reserved_floors(self) -> dict[str, float]:
+        """Return the effective reserve floor in SOC points, per battery.
+
+        Read from the ``price_reserve`` discharge blocker, where the controller
+        writes the floor it blocks on (``reserved_floor = min(100, min_soc +
+        reserve_soc_pct)``), so this is the enforced figure rather than the
+        configured ``min_soc``. Only batteries held right now appear: one above
+        its floor has no block and needs none.
+        """
+        reader = getattr(self.controller, "get_battery_discharge_blockers", None)
+        if not callable(reader):
+            return {}
+        try:
+            blockers = reader() or {}
+        except Exception:  # noqa: BLE001 - diagnostics must never raise
+            return {}
+        floors: dict[str, float] = {}
+        for battery, by_source in blockers.items():
+            details = ((by_source or {}).get("price_reserve") or {}).get(
+                "details"
+            ) or {}
+            floor = details.get("reserved_floor")
+            if isinstance(floor, (int, float)) and not isinstance(floor, bool):
+                floors[str(battery)] = float(floor)
+        return floors
 
     @property
     def is_on(self) -> bool:
@@ -345,12 +379,34 @@ class DischargeReserveSensor(BinarySensorEntity):
         # *not* added to _unrecorded_attributes: it is a single float, smaller
         # than the scalars (reserve_kwh, usable_energy_kwh) that are recorded
         # today, and following the reserve per minute is what this entity is for.
+        #
+        # It is a remainder over the *counted* capacity (the batteries the plan
+        # was sized against), not a fleet band: with one of two batteries outside
+        # the eligibility filters it reads half the fleet-wide band, so
+        # counted_capacity_kwh is published beside it. And once every usable kWh
+        # is claimed it stops being a quantity of its own: reserve_kwh is then
+        # usable_energy_kwh - pv_credit_kwh, so the remainder collapses exactly
+        # onto pv_credit_kwh. ``usable_above_reserve_is_pv_credit`` says when
+        # that is the case, because it is the cycle that reads most misleadingly.
         usable = status.get("usable_energy_kwh")
         reserve = status.get("reserve_kwh")
         if isinstance(usable, (int, float)) and isinstance(reserve, (int, float)):
             attrs["usable_above_reserve_kwh"] = round(
                 float(usable) - float(reserve), 3
             )
+            claimed = status.get("claimed_kwh")
+            if isinstance(claimed, (int, float)) and not isinstance(claimed, bool):
+                # Same EPSILON the claim loop stops on: claimed is capped at
+                # usable_energy_kwh, so reaching it is what saturates the reserve.
+                attrs["usable_above_reserve_is_pv_credit"] = bool(
+                    float(claimed) >= float(usable) - 1e-9
+                )
+        capacity = status.get("total_capacity_kwh")
+        if isinstance(capacity, (int, float)) and not isinstance(capacity, bool):
+            attrs["counted_capacity_kwh"] = round(float(capacity), 3)
+        floors = self._reserved_floors()
+        if floors:
+            attrs["reserved_floor_pct_by_battery"] = floors
         return attrs
 
     @property
