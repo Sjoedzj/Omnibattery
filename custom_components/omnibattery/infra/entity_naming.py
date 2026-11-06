@@ -82,6 +82,31 @@ def is_omnibattery_solar_entity(hass, entity_id: str | None) -> bool:
     )
 
 
+def is_omnibattery_entity(hass, entity_id: str | None) -> bool:
+    """Return whether an entity is one of OmniBattery's own entities.
+
+    Deliberately broader than :func:`is_omnibattery_solar_entity`, which only
+    covers ``_solar_power`` outputs. An *input* the integration reads must not be
+    one of its own outputs at all, whatever that output is called, so the check
+    covers the suggested ``omnibattery_*`` object id, the legacy
+    ``marstek_venus_system_*`` id (same string as
+    :data:`SYSTEM_UNIQUE_ID_PREFIX`, which is what HA slugified into those ids)
+    and finally the registry platform for an entity the user renamed.
+    """
+    if not entity_id:
+        return False
+    _domain, _, object_id = entity_id.partition(".")
+    if object_id.startswith(SYSTEM_OBJECT_ID_PREFIX):
+        return True
+    if object_id.startswith(SYSTEM_UNIQUE_ID_PREFIX):
+        return True
+    try:
+        entry = er.async_get(hass).async_get(entity_id)
+    except (AttributeError, KeyError, TypeError):
+        return False
+    return bool(entry and entry.platform in {"omnibattery", "marstek_venus"})
+
+
 def excluded_device_name(hass, device: dict) -> str:
     """Return an excluded device's Home Assistant name, with an ID fallback.
 

@@ -60,7 +60,7 @@ from .config_backup import (
     async_restore_config_backup,
 )
 from .infra.lifecycle import clear_reload_pending, mark_reload_pending
-from .infra.entity_naming import is_omnibattery_solar_entity
+from .infra.entity_naming import is_omnibattery_entity, is_omnibattery_solar_entity
 from .solar_forecast import normalize_solar_forecast_config
 from .const import (
     DOMAIN,
@@ -345,6 +345,24 @@ def _validate_solar_production_sensor(
     return {}
 
 
+def _validate_solar_forecast_sensors(
+    hass: HomeAssistant, user_input: dict[str, Any]
+) -> dict[str, str]:
+    """Reject OmniBattery's own entities as solar forecast inputs.
+
+    Both forecast fields are checked, not only the horizon that wins the save:
+    the read path resolves whichever is configured straight into the planner, so
+    any Omnibattery entity here is a loop, and a stale value in the losing field
+    is one pick away from becoming the winner.
+    """
+    errors: dict[str, str] = {}
+    for key in (CONF_SOLAR_FORECAST_SENSOR, CONF_SOLAR_FORECAST_REMAINING_SENSOR):
+        sensor = user_input.get(key)
+        if sensor and is_omnibattery_entity(hass, sensor):
+            errors[key] = "solar_forecast_sensor_circular"
+    return errors
+
+
 def _restore_unrenderable_sensors(
     hass: HomeAssistant, user_input: dict[str, Any], stored: dict[str, Any]
 ) -> dict[str, Any]:
@@ -397,6 +415,10 @@ def _resolve_forecast_sensor(hass, config, user_input, errors) -> str | None:
         return config.get(CONF_SOLAR_FORECAST_SENSOR)
     sensor = user_input.get("solar_forecast_sensor")
     if sensor:
+        if is_omnibattery_entity(hass, sensor):
+            # Same field, same config key, same read path as the global one.
+            errors["solar_forecast_sensor"] = "solar_forecast_sensor_circular"
+            return sensor
         state = hass.states.get(sensor)
         if state is None:
             errors["solar_forecast_sensor"] = "sensor_not_found"
@@ -1453,6 +1475,8 @@ class MarstekVenusConfigFlow(LegacyDomainMigrationMixin, ConfigFlow, domain=DOMA
                         errors[key] = "sensor_not_found"
                     elif forecast_state.attributes.get("unit_of_measurement", "") not in ["kWh", "Wh"]:
                         errors[key] = "invalid_unit"
+
+            errors.update(_validate_solar_forecast_sensors(self.hass, user_input))
 
             errors.update(_validate_solar_production_sensor(self.hass, user_input))
 
@@ -3853,6 +3877,8 @@ class OptionsFlowHandler(OptionsFlow):
                             errors[key] = "sensor_not_found"
                         elif forecast_state.attributes.get("unit_of_measurement", "") not in ["kWh", "Wh"]:
                             errors[key] = "invalid_unit"
+
+                errors.update(_validate_solar_forecast_sensors(self.hass, user_input))
 
                 errors.update(_validate_solar_production_sensor(self.hass, user_input))
 
