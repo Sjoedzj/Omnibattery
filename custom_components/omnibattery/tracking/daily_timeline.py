@@ -3202,6 +3202,28 @@ class DailyOperationTimelineManager:
             else planned_soc_pct[index]
             for index in range(INTERVAL_COUNT)
         ]
+
+        # The five source/destination flows have no measured counterpart: the
+        # diary only samples the aggregate charge and discharge energy, so there
+        # is nothing to fall back on once a quarter is over.  A closed or
+        # already-passed quarter therefore reports "unknown" instead of
+        # publishing its projection as if it had been observed, while the
+        # current and future quarters keep the planned flow.  The cell itself is
+        # left untouched, so freezing, restore and the projection signature are
+        # unaffected.
+        def visible_flow(attribute: str) -> list[float | None]:
+            return [
+                getattr(cell, attribute)
+                if index >= self._current_index and not self._closed[index]
+                else None
+                for index, cell in enumerate(self._cells)
+            ]
+
+        visible_solar_to_battery = visible_flow("planned_solar_to_battery_kwh")
+        visible_grid_to_battery = visible_flow("planned_grid_to_battery_kwh")
+        visible_battery_to_home = visible_flow("planned_battery_to_home_kwh")
+        visible_grid_to_home = visible_flow("planned_grid_to_home_kwh")
+        visible_solar_to_home = visible_flow("planned_solar_to_home_kwh")
         payload = {
             "schema_version": DAILY_TIMELINE_SCHEMA_VERSION,
             "local_date": self._local_date.isoformat(),
@@ -3266,11 +3288,11 @@ class DailyOperationTimelineManager:
                 "soc_pct": visible_soc_pct,
                 "actual_soc_pct": actual_soc_pct,
                 "planned_soc_pct": planned_soc_pct,
-                "solar_to_battery_kwh": [cell.planned_solar_to_battery_kwh for cell in self._cells],
-                "grid_to_battery_kwh": [cell.planned_grid_to_battery_kwh for cell in self._cells],
-                "battery_to_home_kwh": [cell.planned_battery_to_home_kwh for cell in self._cells],
-                "grid_to_home_kwh": [cell.planned_grid_to_home_kwh for cell in self._cells],
-                "solar_to_home_kwh": [cell.planned_solar_to_home_kwh for cell in self._cells],
+                "solar_to_battery_kwh": visible_solar_to_battery,
+                "grid_to_battery_kwh": visible_grid_to_battery,
+                "battery_to_home_kwh": visible_battery_to_home,
+                "grid_to_home_kwh": visible_grid_to_home,
+                "solar_to_home_kwh": visible_solar_to_home,
                 "stored_energy_end_kwh": [cell.planned_stored_energy_end_kwh for cell in self._cells],
                 "soc_end_pct": [cell.planned_soc_end_pct for cell in self._cells],
                 "observed_seconds_by_action": observed_totals,

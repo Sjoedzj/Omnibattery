@@ -247,3 +247,34 @@ def test_diagnostics_tolerate_missing_manager():
     assert result["available"] is False
     assert result["counts"]["unknown_cells"] == 96
     json.dumps(result, allow_nan=False)
+
+
+def test_planned_flow_series_stay_inside_the_unrecorded_operations_section():
+    """The five flows must never reach the recorder.
+
+    They are 96-element diagnostic series, so they may only travel below
+    ``operations``, the section the entity declares as unrecorded, and they
+    must stay out of the bounded diagnostics summary as well.
+    """
+    flows = {
+        "solar_to_battery_kwh": 0.2,
+        "grid_to_battery_kwh": 0.1,
+        "battery_to_home_kwh": 0.4,
+        "grid_to_home_kwh": 0.3,
+        "solar_to_home_kwh": 0.05,
+    }
+    snapshot = _snapshot()
+    snapshot["operations"].update({key: [value] * 96 for key, value in flows.items()})
+    controller = SimpleNamespace(daily_operation_timeline=_TimelineManager(snapshot))
+    sensor = DailyOperationTimelineSensor(controller)
+    attrs = sensor.extra_state_attributes
+
+    for key in flows:
+        assert key not in attrs, key
+    assert "operations" in sensor._unrecorded_attributes
+
+    summary = diagnostics._daily_operation_timeline_summary(controller)
+
+    for key in flows:
+        assert not _contains_key(summary, key), key
+    json.dumps(summary, allow_nan=False)

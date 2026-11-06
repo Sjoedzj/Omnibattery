@@ -1271,3 +1271,87 @@ async def test_charge_delay_metadata_is_throttled_and_keeps_its_tail_keys():
     manager.update_runtime_metadata(stale=True)
     assert manager.last_notification_immediate is True
     await manager.async_save_all()
+
+
+FLOW_PLAN_FIELDS = {
+    "solar_to_battery_kwh": "planned_solar_to_battery_kwh",
+    "grid_to_battery_kwh": "planned_grid_to_battery_kwh",
+    "battery_to_home_kwh": "planned_battery_to_home_kwh",
+    "grid_to_home_kwh": "planned_grid_to_home_kwh",
+    "solar_to_home_kwh": "planned_solar_to_home_kwh",
+}
+
+
+def test_a_closed_quarter_never_publishes_the_planned_flows_as_history():
+    """A past quarter must not present its projection as something observed.
+
+    The diary samples only the aggregate charge and discharge energy, so the
+    five source/destination flows have no measured counterpart.  Publishing the
+    plan for an elapsed quarter made the tooltip describe planning as history.
+    """
+    clock = MutableClock(datetime(2026, 8, 23, 10, 7, tzinfo=MADRID))
+    manager = _manager(clock)
+    planned = {
+        "solar_to_battery_kwh": 0.2,
+        "grid_to_battery_kwh": 0.1,
+        "battery_to_home_kwh": 0.4,
+        "grid_to_home_kwh": 0.3,
+        "solar_to_home_kwh": 0.05,
+    }
+    manager.rebuild_future_projection(
+        [
+            {
+                "index": 40,
+                "action_mask": ACTION_SOLAR_CHARGE | ACTION_GRID_CHARGE,
+                **planned,
+            }
+        ],
+        mode="dynamic_pricing",
+    )
+
+    # While the quarter is still running the projection is the published answer.
+    open_snapshot = manager.build_public_snapshot()
+    assert open_snapshot["operations"]["closed"][40] is False
+    for key, value in planned.items():
+        assert open_snapshot["operations"][key][40] == pytest.approx(value)
+
+    # 10:16 closes 10:00-10:15: the cell keeps its frozen plan, but the public
+    # series reports "unknown" instead of replaying the plan as the day's truth.
+    clock.value = datetime(2026, 8, 23, 10, 16, tzinfo=MADRID)
+    manager.rebuild_future_projection([], mode="dynamic_pricing")
+    closed_snapshot = manager.build_public_snapshot()
+
+    assert closed_snapshot["operations"]["closed"][40] is True
+    stored_cell = manager._store_payload()["cells"][40]
+    for key, value in planned.items():
+        assert stored_cell[FLOW_PLAN_FIELDS[key]] == pytest.approx(value)
+        assert closed_snapshot["operations"][key][40] is None
+
+
+def test_the_current_and_future_quarters_keep_the_planned_flows():
+    clock = MutableClock(datetime(2026, 8, 23, 10, 7, tzinfo=MADRID))
+    manager = _manager(clock)
+    manager.rebuild_future_projection(
+        [
+            {"index": 40, "solar_to_battery_kwh": 0.2, "battery_to_home_kwh": 0.4},
+            {
+                "index": 41,
+                "grid_to_battery_kwh": 0.1,
+                "grid_to_home_kwh": 0.3,
+                "solar_to_home_kwh": 0.05,
+            },
+        ],
+        mode="dynamic_pricing",
+    )
+
+    operations = manager.build_public_snapshot()["operations"]
+
+    assert operations["closed"][40] is False
+    assert operations["solar_to_battery_kwh"][40] == pytest.approx(0.2)
+    assert operations["battery_to_home_kwh"][40] == pytest.approx(0.4)
+    assert operations["grid_to_battery_kwh"][41] == pytest.approx(0.1)
+    assert operations["grid_to_home_kwh"][41] == pytest.approx(0.3)
+    assert operations["solar_to_home_kwh"][41] == pytest.approx(0.05)
+    # An elapsed quarter is never given an invented plan either.
+    for key in FLOW_PLAN_FIELDS:
+        assert operations[key][39] is None
