@@ -337,7 +337,20 @@ class DischargeReserveSensor(BinarySensorEntity):
                 self.controller, "discharge_reserve_min_saving", None
             ),
         }
-        attrs.update(self._status())
+        status = self._status()
+        attrs.update(status)
+        # Every other input of the decision is already in the snapshot (threshold
+        # and reference price, horizon, claims, reserved slots); the one figure
+        # missing is the energy actually left to discharge right now. Deliberately
+        # *not* added to _unrecorded_attributes: it is a single float, smaller
+        # than the scalars (reserve_kwh, usable_energy_kwh) that are recorded
+        # today, and following the reserve per minute is what this entity is for.
+        usable = status.get("usable_energy_kwh")
+        reserve = status.get("reserve_kwh")
+        if isinstance(usable, (int, float)) and isinstance(reserve, (int, float)):
+            attrs["usable_above_reserve_kwh"] = round(
+                float(usable) - float(reserve), 3
+            )
         return attrs
 
     @property
@@ -591,6 +604,27 @@ class PredictiveChargingStatusSensor(BinarySensorEntity):
             attrs["solar_forecast_remaining_sensor"] = self.controller.solar_forecast_remaining_sensor
         if getattr(self.controller, "solar_forecast_source", None):
             attrs["solar_forecast_source"] = self.controller.solar_forecast_source
+
+        # Raw provider periods behind the solar timeline. The Energy-dashboard
+        # cache is where the fetched period list actually lives (solar_forecast.py
+        # stores ``(sensor, monotonic, periods)``); publishing start/end/energy
+        # per period shows which periods arrive, how long they are and how much
+        # energy they carry, without dumping the objects. Above a hundred
+        # periods it stays out of the state entirely.
+        cached_periods = getattr(self.controller, "_energy_solar_forecast", None)
+        try:
+            periods = cached_periods[2]
+        except (TypeError, IndexError, KeyError):
+            periods = None
+        if periods and len(periods) <= 100:
+            attrs["solar_forecast_periods"] = [
+                {
+                    "start": period.start.isoformat(),
+                    "end": period.end.isoformat(),
+                    "energy_kwh": round(float(period.energy_kwh), 3),
+                }
+                for period in periods
+            ]
 
         attrs["max_contracted_power"] = self.controller.max_contracted_power
         attrs["icp_excluded_protection_w"] = round(getattr(self.controller, "_icp_excluded_protection_w", 0.0))

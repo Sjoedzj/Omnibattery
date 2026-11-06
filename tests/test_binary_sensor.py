@@ -1,14 +1,16 @@
 """Tests for system-level binary sensor diagnostics."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from custom_components.omnibattery.binary_sensor import (
     CurtailmentStatusSensor,
+    DischargeReserveSensor,
     PredictiveChargingStatusSensor,
 )
 from custom_components.omnibattery.pricing import CurtailmentPlan
+from custom_components.omnibattery.solar_forecast import SolarForecastPeriod
 
 
 def _sensor(*, runtime_status: str, plan: CurtailmentPlan | None):
@@ -179,3 +181,140 @@ def test_excluded_demand_claim_is_not_recorded():
 
     assert "excluded_demand_claim_kwh" in unrecorded
     assert "solar_available_to_battery_kwh" in unrecorded
+
+
+# --- Raw provider periods behind the solar timeline ------------------------
+# The attribute key existed in _unrecorded_attributes but nothing ever filled
+# it, so the panel could not show which periods arrived, how long they were or
+# how much energy they carried. The source is the controller's Energy-dashboard
+# cache: ``(sensor, monotonic, tuple[SolarForecastPeriod, ...])``.
+
+_FIRST_PERIOD_START = datetime(2026, 8, 17, 10, 0, tzinfo=timezone.utc)
+
+
+def _cached_periods(count: int = 2) -> tuple[SolarForecastPeriod, ...]:
+    return tuple(
+        SolarForecastPeriod(
+            _FIRST_PERIOD_START + timedelta(minutes=15 * index),
+            _FIRST_PERIOD_START + timedelta(minutes=15 * (index + 1)),
+            0.5 if index else 0.4321,
+        )
+        for index in range(count)
+    )
+
+
+def _predictive_attrs(controller) -> dict:
+    return PredictiveChargingStatusSensor(None, None, controller).extra_state_attributes
+
+
+def test_solar_forecast_periods_are_published_from_the_energy_cache():
+    controller = _predictive_controller(decision={}, chronological={})
+    controller._energy_solar_forecast = ("sensor.solcast", 1234.5, _cached_periods())
+
+    attrs = _predictive_attrs(controller)
+
+    assert attrs["solar_forecast_periods"] == [
+        {
+            "start": "2026-08-17T10:00:00+00:00",
+            "end": "2026-08-17T10:15:00+00:00",
+            "energy_kwh": 0.432,
+        },
+        {
+            "start": "2026-08-17T10:15:00+00:00",
+            "end": "2026-08-17T10:30:00+00:00",
+            "energy_kwh": 0.5,
+        },
+    ]
+
+
+def test_solar_forecast_periods_are_omitted_without_a_cache():
+    controller = _predictive_controller(decision={}, chronological={})
+
+    assert "solar_forecast_periods" not in _predictive_attrs(controller)
+
+
+def test_solar_forecast_periods_are_omitted_above_the_cap():
+    controller = _predictive_controller(decision={}, chronological={})
+    controller._energy_solar_forecast = ("sensor.solcast", 1234.5, _cached_periods(101))
+
+    assert "solar_forecast_periods" not in _predictive_attrs(controller)
+
+
+def test_solar_forecast_periods_stay_out_of_the_recorder():
+    assert (
+        "solar_forecast_periods"
+        in PredictiveChargingStatusSensor._unrecorded_attributes
+    )
+
+
+# --- Discharge reserve decision surface -----------------------------------
+
+
+def _reserve_attrs(status: dict) -> dict:
+    """Attributes of the reserve sensor over a manager publishing ``status``."""
+    controller = SimpleNamespace(
+        discharge_reserve_enabled=True,
+        discharge_reserve_min_saving=0.1,
+        _discharge_reserve_mgr=SimpleNamespace(get_status=lambda: dict(status)),
+    )
+    return DischargeReserveSensor(None, None, controller).extra_state_attributes
+
+
+def test_discharge_reserve_publishes_the_energy_left_to_discharge():
+    claims = [
+        {
+            "start": "2026-08-17T18:00:00+02:00",
+            "price": 0.3,
+            "claimed_kwh": 2.0,
+            "pv_credit_kwh": 0.0,
+            "expected_surplus_kwh": 0.0,
+        }
+    ]
+    reserved = [
+        {
+            "start": "2026-08-17T18:00:00+02:00",
+            "end": "2026-08-17T18:15:00+02:00",
+            "price": 0.3,
+            "net_demand_kwh": 2.0,
+        }
+    ]
+
+    attrs = _reserve_attrs(
+        {
+            "state": "reserving",
+            "reason": "reserved_for_dearer_hours",
+            "reserve_soc_pct": 40.0,
+            "reserve_kwh": 4.0,
+            "usable_energy_kwh": 10.0,
+            "threshold_price": 0.25,
+            "reference_price": 0.19,
+            "horizon_end": "2026-08-18T06:00:00+02:00",
+            "claims": claims,
+            "reserved_slots": reserved,
+        }
+    )
+
+    assert attrs["usable_above_reserve_kwh"] == 6.0
+    # The decision inputs that already existed must keep passing through.
+    assert attrs["threshold_price"] == 0.25
+    assert attrs["reference_price"] == 0.19
+    assert attrs["horizon_end"] == "2026-08-18T06:00:00+02:00"
+    assert attrs["claims"] == claims
+    assert attrs["reserved_slots"] == reserved
+
+
+def test_discharge_reserve_omits_the_remainder_without_a_plan():
+    attrs = _reserve_attrs(
+        {"state": "released", "reason": "no_plan", "reserve_soc_pct": 0.0}
+    )
+
+    assert "usable_above_reserve_kwh" not in attrs
+    assert attrs["reserve_soc_pct"] == 0.0
+
+
+def test_discharge_reserve_remainder_is_recorded_and_the_lists_are_not():
+    """One float is small enough for history; the per-slot lists are not."""
+    unrecorded = DischargeReserveSensor._unrecorded_attributes
+
+    assert "usable_above_reserve_kwh" not in unrecorded
+    assert {"claims", "reserved_slots"}.issubset(unrecorded)
