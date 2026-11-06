@@ -355,8 +355,13 @@ async def async_fetch_energy_solar_forecast(hass: Any, sensor: str | None) -> di
 def periods_from_wh_hours(wh_hours: dict) -> tuple[SolarForecastPeriod, ...]:
     """Turn Energy dashboard ``wh_hours`` into dated periods.
 
-    Keys are period starts; providers omit zero periods (Solcast), so the
-    period length is the smallest gap between keys.
+    Keys are period starts; providers omit zero periods (Solcast), so one key
+    distance is the period length.  The distance that occurs most often wins,
+    not the smallest one (#558): the dashboard sums one curve per array, and a
+    single off-grid key of one array must not shrink every period and squeeze
+    an hour of energy into the first quarter of that hour.  A key inside the
+    running distance belongs to that same period, which keeps the periods
+    disjoint; the final key has no next key and keeps that distance.
     """
     entries = []
     for timestamp, wh in wh_hours.items():
@@ -368,11 +373,27 @@ def periods_from_wh_hours(wh_hours: dict) -> tuple[SolarForecastPeriod, ...]:
         if start is not None and math.isfinite(energy) and energy >= 0.0:
             entries.append((start, energy))
     entries.sort(key=lambda entry: entry[0].timestamp())
-    step = min(
-        (b[0] - a[0] for a, b in zip(entries, entries[1:]) if b[0] > a[0]),
-        default=timedelta(hours=1),
-    )
-    return tuple(SolarForecastPeriod(start, start + step, energy) for start, energy in entries)
+    counts: dict[timedelta, int] = {}
+    for (first, _), (second, _) in zip(entries, entries[1:]):
+        if second > first:
+            counts[second - first] = counts.get(second - first, 0) + 1
+    if counts:
+        most = max(counts.values())
+        # On a tie the longest distance compresses the least energy.
+        step = max(gap for gap, count in counts.items() if count == most)
+    else:
+        step = timedelta(hours=1)
+    periods: list[SolarForecastPeriod] = []
+    index = 0
+    while index < len(entries):
+        start, energy = entries[index]
+        end = start + step
+        index += 1
+        while index < len(entries) and entries[index][0] < end:
+            energy += entries[index][1]
+            index += 1
+        periods.append(SolarForecastPeriod(start, end, energy))
+    return tuple(periods)
 
 
 def _energy_dashboard_periods(

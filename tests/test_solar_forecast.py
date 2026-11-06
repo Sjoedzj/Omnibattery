@@ -11,6 +11,7 @@ from custom_components.omnibattery.solar_forecast import (
     SolarForecastInput,
     get_configured_solar_forecast_sensor,
     normalize_solar_forecast_config,
+    periods_from_wh_hours,
     read_remaining_solar_kwh,
     read_solar_forecast_kwh,
 )
@@ -360,3 +361,50 @@ async def test_energy_dashboard_forecasts_are_summed(monkeypatch):
 
     # East counted once despite being listed twice; each instant merged.
     assert sorted(wh_hours.values()) == [1200.0, 1300.0]
+
+
+def test_wh_hours_keep_an_hour_per_period_with_one_off_grid_key():
+    """#558: one array's odd key must not shrink every summed period."""
+    base = datetime(2026, 8, 18, 8, 0, tzinfo=MADRID)
+    wh_hours = {
+        (base + timedelta(hours=hour)).isoformat(): 1000.0 * (hour + 1)
+        for hour in range(11)
+    }
+    # The summed dashboard curve also carries one key ten minutes into an hour.
+    wh_hours[(base + timedelta(hours=4, minutes=10)).isoformat()] = 250.0
+
+    periods = periods_from_wh_hours(wh_hours)
+
+    assert [period.end - period.start for period in periods] == [timedelta(hours=1)] * 11
+    assert sum(period.energy_kwh for period in periods) == pytest.approx(
+        sum(wh_hours.values()) / 1000.0
+    )
+    # The last key has no next key and keeps the same one-hour length.
+    assert periods[-1].start == base + timedelta(hours=10)
+    assert periods[-1].end - periods[-1].start == timedelta(hours=1)
+
+
+def test_wh_hours_merge_the_same_instant_published_in_two_offset_forms():
+    """Two providers may name one instant differently; that is one period."""
+    wh_hours = {
+        "2026-08-18T12:00:00+02:00": 1000.0,
+        "2026-08-18T10:00:00+00:00": 500.0,
+        "2026-08-18T13:00:00+02:00": 2000.0,
+    }
+
+    periods = periods_from_wh_hours(wh_hours)
+
+    assert len(periods) == 2
+    assert periods[0].start == datetime(2026, 8, 18, 12, 0, tzinfo=MADRID)
+    assert periods[0].end - periods[0].start == timedelta(hours=1)
+    assert periods[0].energy_kwh == pytest.approx(1.5)
+    assert periods[1].energy_kwh == pytest.approx(2.0)
+
+
+def test_wh_hours_fall_back_to_one_hour_without_a_key_distance():
+    """A lone key cannot shrink below the documented one-hour default."""
+    periods = periods_from_wh_hours({"2026-08-18T12:00:00+02:00": 1000.0})
+
+    assert len(periods) == 1
+    assert periods[0].end - periods[0].start == timedelta(hours=1)
+    assert periods[0].energy_kwh == pytest.approx(1.0)
