@@ -104,7 +104,12 @@ def is_omnibattery_entity(hass, entity_id: str | None) -> bool:
         entry = er.async_get(hass).async_get(entity_id)
     except (AttributeError, KeyError, TypeError):
         return False
-    return bool(entry and entry.platform in {"omnibattery", "marstek_venus"})
+    # ``getattr``: a registry double (or a future registry change) need not carry
+    # ``platform``, and an unknown platform must read as "not ours" rather than
+    # crash the read path that only wanted to reject a self-reference.
+    return bool(
+        entry and getattr(entry, "platform", None) in {"omnibattery", "marstek_venus"}
+    )
 
 
 def excluded_device_name(hass, device: dict) -> str:

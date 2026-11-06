@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from time import monotonic
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.config_entries import ConfigEntry
@@ -590,6 +591,8 @@ class PredictiveChargingStatusSensor(BinarySensorEntity):
         "consumption_rate_kwh_h", "consumption_accumulator_source",
         "energy_deadlines", "slot_energy_targets_kwh", "slot_deadlines",
         "decision_reason", "solar_forecast_periods",
+        # provenance of that same list: the age changes on every single read
+        "solar_forecast_periods_source", "solar_forecast_periods_age_s",
         "energy_horizon_end", "overnight_consumption_kwh",
     })
 
@@ -668,10 +671,28 @@ class PredictiveChargingStatusSensor(BinarySensorEntity):
         # energy they carry, without dumping the objects. Above a hundred
         # periods it stays out of the state entirely.
         cached_periods = getattr(self.controller, "_energy_solar_forecast", None)
+        cache_source = None
+        cache_age_s = None
         try:
             periods = cached_periods[2]
         except (TypeError, IndexError, KeyError):
             periods = None
+        # Provenance is read in its own guard: a cache whose stamp cannot be
+        # read must still publish its periods. Publishing the sensor the list was
+        # keyed on is what makes it attributable — the same periods can come from
+        # the configured forecast sensor or from the Energy dashboard, and without
+        # the source and its age a stale cache from the wrong provider is
+        # indistinguishable from a fresh, correct one.
+        try:
+            cache_source = cached_periods[0]
+            cache_age_s = max(0.0, monotonic() - float(cached_periods[1]))
+        except (TypeError, IndexError, KeyError, ValueError):
+            cache_source = None
+            cache_age_s = None
+        if cache_source:
+            attrs["solar_forecast_periods_source"] = cache_source
+            if cache_age_s is not None:
+                attrs["solar_forecast_periods_age_s"] = round(cache_age_s, 1)
         if periods and len(periods) <= 100:
             attrs["solar_forecast_periods"] = [
                 {

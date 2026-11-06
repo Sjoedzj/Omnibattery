@@ -2937,8 +2937,13 @@ class MarstekVenusPanel extends HTMLElement {
       forecastSolarBase, extension, ["solar_kwh", "solar_forecast_kwh"]
     );
     const actualConsumption = this._dailyOperationExtendedArray(actualConsumptionBase, [], []);
+    // Tomorrow's night must read the same channel as today's day part. On a
+    // blocked or capacity-held quarter the simulation reports consumption_kwh = 0
+    // (the battery drains nothing) while consumption_forecast_kwh carries the
+    // demand the grid serves. Preferring consumption_kwh here made the night
+    // curve show a flat zero demand that the day curve contradicts.
     const forecastConsumption = this._dailyOperationExtendedArray(
-      forecastConsumptionBase, extension, ["consumption_kwh", "consumption_forecast_kwh"]
+      forecastConsumptionBase, extension, ["consumption_forecast_kwh", "consumption_kwh"]
     );
     const storedActualSoc = this._dailyOperationExtendedArray(storedActualSocBase, [], []);
     const forecastSoc = this._dailyOperationExtendedArray(

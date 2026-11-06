@@ -31,7 +31,7 @@ from zoneinfo import ZoneInfo
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from ..const import DOMAIN
+from ..const import ACTION_ENERGY_DEADBAND_KWH, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -127,8 +127,30 @@ POWER_DEADBAND_W = 10.0
 # boundary is three million times larger, so it painted an entire cell as a full
 # grid charge. 0.01 kWh over a quarter is a 40 W average, which is the same kind
 # of "nothing" ``POWER_DEADBAND_W`` already means at the power level.
-_ACTION_ENERGY_DEADBAND_KWH = 0.01
+#
+# The value itself lives in ``const`` (``ACTION_ENERGY_DEADBAND_KWH``) so the
+# projected mask composed by ``pricing/daily_timeline.py`` and this observed
+# derivation cannot drift apart again; this name stays as the tracking-local
+# alias the code below reads.
+_ACTION_ENERGY_DEADBAND_KWH = ACTION_ENERGY_DEADBAND_KWH
 _EPSILON = 1e-9
+
+# Field names a decision may use to *state* an action, and the flow fields whose
+# measured energy implies one. Shared by the display derivation (dead-band) and
+# the raw measurement (``_EPSILON``) so the two can never drift apart.
+_ACTION_NAME_KEYS = (
+    "actual_action_mask",
+    "action_mask",
+    "actions",
+    "action",
+    "operation",
+    "direction",
+)
+_ACTION_ENERGY_KEYS = (
+    (("solar_to_battery_kwh", "pv_to_battery_kwh", "solar_excess_kwh"), ACTION_SOLAR_CHARGE),
+    (("grid_to_battery_kwh", "grid_charge_kwh"), ACTION_GRID_CHARGE),
+    (("battery_to_home_kwh", "battery_discharge_kwh"), ACTION_DISCHARGE),
+)
 
 _ACTION_NAMES = {
     ACTION_SOLAR_CHARGE: "solar_charge",
@@ -710,6 +732,13 @@ class _TimelineCell:
 
     actual_action_mask: int = ACTION_NONE
     planned_action_mask: int = ACTION_NONE
+    # Bits a measured flow carried above the numerical guard but below the
+    # display dead-band. The cell shows no action for them (they are seconds of
+    # spill, not a quarter of charge), yet the quarter was not idle, and the
+    # diagnostics have to be able to say so. Kept apart from the display masks so
+    # no existing consumer changes meaning.
+    actual_deadband_hidden_mask: int = ACTION_NONE
+    planned_deadband_hidden_mask: int = ACTION_NONE
     actual_context_mask: int = CONTEXT_NONE
     planned_context_mask: int = CONTEXT_NONE
     actual_coexistence_mask: int = ACTION_NONE
@@ -742,6 +771,7 @@ class _TimelineCell:
 
     def clear_planned(self) -> None:
         self.planned_action_mask = ACTION_NONE
+        self.planned_deadband_hidden_mask = ACTION_NONE
         self.planned_context_mask = CONTEXT_NONE
         self.planned_coexistence_mask = ACTION_NONE
         self.planned_grid_charge_decision = GRID_CHARGE_NOT_APPLICABLE
@@ -762,6 +792,8 @@ class _TimelineCell:
         return {
             "actual_action_mask": self.actual_action_mask,
             "planned_action_mask": self.planned_action_mask,
+            "actual_deadband_hidden_mask": self.actual_deadband_hidden_mask,
+            "planned_deadband_hidden_mask": self.planned_deadband_hidden_mask,
             "actual_context_mask": self.actual_context_mask,
             "planned_context_mask": self.planned_context_mask,
             "actual_coexistence_mask": self.actual_coexistence_mask,
@@ -1656,31 +1688,29 @@ class DailyOperationTimelineManager:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _action_mask_from_decision(decision: Any) -> int:
+    def _action_mask_from_decision(
+        decision: Any, threshold: float = _ACTION_ENERGY_DEADBAND_KWH
+    ) -> int:
+        """Bits a decision states outright, else the bits its flows imply.
+
+        ``threshold`` is the energy a flow must carry to count as an action. The
+        default is the display dead-band; pass ``_EPSILON`` for the raw
+        measurement, which is what tells the diagnostics how many quarters the
+        dead-band is hiding.
+        """
         mapping = _object_mapping(decision)
         if mapping is None:
             return _mask_from_value(decision, _ACTION_NAME_TO_MASK, ACTION_MASK_ALL)
-        for name in (
-            "actual_action_mask",
-            "action_mask",
-            "actions",
-            "action",
-            "operation",
-            "direction",
-        ):
+        for name in _ACTION_NAME_KEYS:
             if name in mapping:
                 mask = _mask_from_value(mapping[name], _ACTION_NAME_TO_MASK, ACTION_MASK_ALL)
                 if mask:
                     return mask
         mask = 0
-        for keys, bit in (
-            (("solar_to_battery_kwh", "pv_to_battery_kwh", "solar_excess_kwh"), ACTION_SOLAR_CHARGE),
-            (("grid_to_battery_kwh", "grid_charge_kwh"), ACTION_GRID_CHARGE),
-            (("battery_to_home_kwh", "battery_discharge_kwh"), ACTION_DISCHARGE),
-        ):
+        for keys, bit in _ACTION_ENERGY_KEYS:
             if any(
                 (parsed := _finite_non_negative(mapping.get(key))) is not None
-                and parsed > _ACTION_ENERGY_DEADBAND_KWH
+                and parsed > threshold
                 for key in keys
             ):
                 mask |= bit
@@ -1689,7 +1719,9 @@ class DailyOperationTimelineManager:
         batteries = mapping.get("batteries") or mapping.get("battery_actions")
         if isinstance(batteries, Sequence) and not isinstance(batteries, (str, bytes)):
             for battery in batteries:
-                mask |= DailyOperationTimelineManager._action_mask_from_decision(battery)
+                mask |= DailyOperationTimelineManager._action_mask_from_decision(
+                    battery, threshold
+                )
         return mask
 
     @staticmethod
@@ -1786,6 +1818,13 @@ class DailyOperationTimelineManager:
             _mask_from_value(action_mask, _ACTION_NAME_TO_MASK, ACTION_MASK_ALL)
             if action_mask is not None
             else self._action_mask_from_decision(mapping)
+        )
+        # What the same decision looks like at the numerical guard instead of the
+        # display dead-band. The difference is the part the graph cannot show:
+        # a flow of a few watt-hours is real, so a cell that reads "no action"
+        # must be distinguishable from a quarter where nothing happened at all.
+        deadband_hidden_mask = (
+            self._action_mask_from_decision(mapping, _EPSILON) & ~parsed_action_mask
         )
         if context_mask is None:
             context_mask = kwargs.get("actual_context_mask", mapping.get("actual_context_mask"))
@@ -1929,6 +1968,7 @@ class DailyOperationTimelineManager:
         cell = self._cells[index]
         old = cell.as_dict()
         cell.actual_action_mask |= parsed_action_mask
+        cell.actual_deadband_hidden_mask |= deadband_hidden_mask
         cell.actual_context_mask |= parsed_context_mask
         explicit_coexistence = coexistence_mask
         if explicit_coexistence is None:
@@ -2407,6 +2447,17 @@ class DailyOperationTimelineManager:
                     if flow is not None and flow > _ACTION_ENERGY_DEADBAND_KWH:
                         action_mask |= bit
                 cell.planned_action_mask = action_mask
+                # The same distinction on the projected side: a projected flow
+                # below the dead-band is not a projection of "nothing".
+                cell.planned_deadband_hidden_mask = 0
+                for field_name, bit in flow_fields:
+                    flow = _finite_non_negative(item_value(field_name, default=None))
+                    if (
+                        flow is not None
+                        and flow > _EPSILON
+                        and not action_mask & bit
+                    ):
+                        cell.planned_deadband_hidden_mask |= bit
                 context_value = item_value("planned_context_mask", "context_mask", default=None)
                 context_mask = (
                     _mask_from_value(context_value, _CONTEXT_NAME_TO_MASK, CONTEXT_MASK_ALL)
@@ -2608,6 +2659,8 @@ class DailyOperationTimelineManager:
         for name in (
             "actual_action_mask",
             "planned_action_mask",
+            "actual_deadband_hidden_mask",
+            "planned_deadband_hidden_mask",
             "actual_context_mask",
             "planned_context_mask",
             "actual_coexistence_mask",
@@ -3121,6 +3174,17 @@ class DailyOperationTimelineManager:
         intervals = self._public_intervals(grid)
         actual_masks = [cell.actual_action_mask for cell in self._cells]
         planned_masks = [cell.planned_action_mask for cell in self._cells]
+        hidden_masks = [
+            cell.actual_deadband_hidden_mask for cell in self._cells
+        ] + [cell.planned_deadband_hidden_mask for cell in self._cells]
+        # Everything the measurement saw, display dead-band or not. ``by_action``
+        # keeps counting what the graph shows; ``raw_by_action`` counts what the
+        # flows actually carried, so the two numbers together say how much the
+        # dead-band is hiding instead of silently absorbing it into "unknown".
+        raw_masks = [
+            mask | hidden
+            for mask, hidden in zip(actual_masks + planned_masks, hidden_masks)
+        ]
         counts = {
             "past_cells": int(sum(self._closed)),
             "current_cells": 1,
@@ -3142,6 +3206,19 @@ class DailyOperationTimelineManager:
             ),
             "by_action": {
                 name: sum(1 for mask in actual_masks + planned_masks if mask & bit)
+                for bit, name in _ACTION_NAMES.items()
+            },
+            # Cells the graph shows as empty although a flow was measured inside
+            # them: small enough to be invisible, large enough not to be nothing.
+            "below_deadband_cells": sum(
+                1
+                for cell in self._cells
+                if (cell.actual_deadband_hidden_mask or cell.planned_deadband_hidden_mask)
+                and cell.actual_action_mask == ACTION_NONE
+                and cell.planned_action_mask == ACTION_NONE
+            ),
+            "raw_by_action": {
+                name: sum(1 for mask in raw_masks if mask & bit)
                 for bit, name in _ACTION_NAMES.items()
             },
             "double_overlaps": sum(
@@ -3261,6 +3338,15 @@ class DailyOperationTimelineManager:
             "operations": {
                 "actual_action_mask": actual_masks,
                 "planned_action_mask": planned_masks,
+                # Not display data: the measured flows the dead-band absorbed.
+                # Published here (unrecorded) so the diagnostics can report how
+                # many cells read "no action" while carrying a real flow.
+                "actual_deadband_hidden_mask": [
+                    cell.actual_deadband_hidden_mask for cell in self._cells
+                ],
+                "planned_deadband_hidden_mask": [
+                    cell.planned_deadband_hidden_mask for cell in self._cells
+                ],
                 "actual_context_mask": [cell.actual_context_mask for cell in self._cells],
                 "planned_context_mask": [cell.planned_context_mask for cell in self._cells],
                 "actual_coexistence_mask": [cell.actual_coexistence_mask for cell in self._cells],

@@ -31,7 +31,7 @@ from datetime import timezone as dt_timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..const import CHARGE_EFFICIENCY
+from ..const import ACTION_ENERGY_DEADBAND_KWH, CHARGE_EFFICIENCY
 
 SCHEMA_VERSION = 1
 INTERVAL_MINUTES = 15
@@ -1343,9 +1343,9 @@ def simulate_battery_projection(
                         else 0.0
                     ),
                     action_mask=compose_action_mask(
-                        solar_charge=solar_input > _EPSILON,
-                        grid_charge=grid_input > _EPSILON,
-                        discharge=discharge_output > _EPSILON,
+                        solar_charge=solar_input > ACTION_ENERGY_DEADBAND_KWH,
+                        grid_charge=grid_input > ACTION_ENERGY_DEADBAND_KWH,
+                        discharge=discharge_output > ACTION_ENERGY_DEADBAND_KWH,
                     ),
                 )
             )
@@ -1365,9 +1365,9 @@ def simulate_battery_projection(
         if context is None:
             context = interval.context_mask
         action_mask = compose_action_mask(
-            solar_charge=solar_to_battery > _EPSILON,
-            grid_charge=grid_to_battery > _EPSILON,
-            discharge=battery_to_home > _EPSILON,
+            solar_charge=solar_to_battery > ACTION_ENERGY_DEADBAND_KWH,
+            grid_charge=grid_to_battery > ACTION_ENERGY_DEADBAND_KWH,
+            discharge=battery_to_home > ACTION_ENERGY_DEADBAND_KWH,
         )
         projected = interval.projected
         if projected is None:

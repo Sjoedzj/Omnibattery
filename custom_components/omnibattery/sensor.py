@@ -1786,6 +1786,15 @@ def _daily_operation_timeline_attributes(controller: object) -> dict[str, object
     actual_coexistence = _timeline_find(
         source, ("actual_coexistence_mask",), operations
     )
+    # Measured flows the display dead-band absorbed: they belong in the same
+    # unrecorded ``operations`` section as the flow series, because they explain
+    # how many cells the dead-band is hiding without becoming a recorded series.
+    actual_deadband_hidden = _timeline_find(
+        source, ("actual_deadband_hidden_mask",), operations
+    )
+    planned_deadband_hidden = _timeline_find(
+        source, ("planned_deadband_hidden_mask",), operations
+    )
     planned_coexistence = _timeline_find(
         source, ("planned_coexistence_mask",), operations
     )
@@ -2051,6 +2060,12 @@ def _daily_operation_timeline_attributes(controller: object) -> dict[str, object
         "operations": {
             "actual_action_mask": _timeline_array(actual_action, _timeline_mask, 0),
             "planned_action_mask": _timeline_array(planned_action, _timeline_mask, 0),
+            "actual_deadband_hidden_mask": _timeline_array(
+                actual_deadband_hidden, _timeline_mask, 0
+            ),
+            "planned_deadband_hidden_mask": _timeline_array(
+                planned_deadband_hidden, _timeline_mask, 0
+            ),
             "actual_coexistence_mask": _timeline_array(
                 actual_coexistence,
                 _timeline_mask,

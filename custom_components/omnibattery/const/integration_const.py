@@ -22,6 +22,24 @@ SCAN_INTERVAL = {
     "very_low": 600   # rarely changing info, e.g., device info, firmware versions
 }
 
+# The smallest energy a quarter-hour flow may carry before it is allowed to
+# colour a whole cell of the daily operation graph.  ``1e-9`` is a numerical
+# guard, not a display one: three watt-hours of spill at a quarter boundary is a
+# real measurement but only about three seconds of flow, and painting the full
+# quarter as a grid charge reads as a bug.  0.01 kWh over a quarter is a 40 W
+# average, the same kind of "nothing" the power dead-band already means.
+#
+# This lives in ``const`` because two layers must agree on the single value:
+# ``pricing/daily_timeline.py`` composes the projected action mask (the
+# statement the dashboard renders) and ``tracking/daily_timeline.py`` derives
+# the observed mask from measured flows.  The two used different thresholds, so
+# a projected cell whose flow only cleared ``1e-9`` was still published with an
+# action bit that the tracking dead-band would never have granted.  ``pricing``
+# deliberately does not import ``tracking`` (the tracking layer owns Home
+# Assistant storage and would drag it into the pure projection module), which is
+# why the one definition sits in the shared constants package instead.
+ACTION_ENERGY_DEADBAND_KWH = 0.01
+
 # Battery version support
 CONF_BATTERY_VERSION = "battery_version"
 CONF_DC_PV_CONNECTED = "dc_pv_connected"

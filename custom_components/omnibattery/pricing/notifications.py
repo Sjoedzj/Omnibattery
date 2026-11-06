@@ -9,6 +9,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
+# One title for every evening re-evaluation outcome, refusals included, so the
+# refusal replaces the earlier "cheap slots scheduled" message in place instead
+# of stacking a second notification next to a stale one.
+EVENING_RECHARGE_TITLE = "Predictive Charging: Evening re-evaluation"
+
 
 def _forecast_notification_context(decision: dict) -> dict:
     """Describe the energy horizon and forecast source consistently."""
@@ -525,16 +530,66 @@ def format_evening_recharge_notification(
     *,
     unit: str,
     avg_soc: float,
+    refusal: dict | None = None,
 ) -> tuple[str, str]:
-    """Format the evening re-evaluation notification."""
+    """Format the evening re-evaluation notification.
+
+    ``refusal`` (see ``PricingManager._evaluate_evening_recharge``) switches the
+    body to the reason the top-up was *not* armed. The title and the deficit line
+    stay identical so the notification replaces the previous evening message in
+    place instead of leaving a stale "charging scheduled" behind.
+    """
+    if refusal is not None:
+        return _format_evening_recharge_refusal(
+            deficit_kwh, unit=unit, avg_soc=avg_soc, refusal=refusal
+        )
     slots_str = ", ".join(
         f"{s.start.strftime('%H:%M')}-{s.end.strftime('%H:%M')} ({s.price:.4f} {unit})"
         for s in slots
     )
-    title = "Predictive Charging: Evening re-evaluation"
+    title = EVENING_RECHARGE_TITLE
     message = (
         f"☀️ Solar ending — batteries not full ({avg_soc:.0f}% avg)\n"
         f"⚡ Deficit: {deficit_kwh:.2f} kWh\n\n"
         f"Cheap slots scheduled:\n{slots_str}"
     )
     return (title, message)
+
+
+def _format_evening_recharge_refusal(
+    deficit_kwh: float,
+    *,
+    unit: str,
+    avg_soc: float,
+    refusal: dict,
+) -> tuple[str, str]:
+    """Explain which gate refused the evening top-up, with its numbers."""
+    ceiling = refusal.get("ceiling")
+    expected = refusal.get("expected_discharge_price")
+    margin = refusal.get("margin")
+    efficiency = refusal.get("round_trip_efficiency")
+    planned = refusal.get("planned_kwh")
+    ceiling_text = "n/a" if ceiling is None else f"{float(ceiling):.4f} {unit}"
+    expected_text = "n/a" if expected is None else f"{float(expected):.4f} {unit}"
+    if refusal.get("reason") == "arbitrage_margin":
+        cause = (
+            f"🚫 Not charging: the arbitrage margin caps the price at "
+            f"{ceiling_text}\n"
+            f"   Expected discharge {expected_text} × round-trip "
+            f"{float(efficiency or 0.0):.2f} − margin {float(margin or 0.0):.4f} "
+            f"{unit}\n"
+        )
+    else:
+        cause = (
+            f"🚫 Not charging: every remaining slot is above the ceiling "
+            f"{ceiling_text}\n"
+            f"   Expected discharge value of a stored kWh: {expected_text}\n"
+        )
+    message = (
+        f"☀️ Solar ending — batteries not full ({avg_soc:.0f}% avg)\n"
+        f"⚡ Deficit: {deficit_kwh:.2f} kWh\n\n"
+        f"{cause}"
+        f"💤 {float(planned or 0.0):.2f} kWh left unpurchased — no slot can "
+        f"earn it back"
+    )
+    return (EVENING_RECHARGE_TITLE, message)

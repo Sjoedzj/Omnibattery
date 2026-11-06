@@ -22,6 +22,7 @@ from .const import (
     CONF_SOLAR_FORECAST_SENSOR,
     T_START_FALLBACK_HOUR,
 )
+from .infra.entity_naming import is_omnibattery_entity
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -446,6 +447,24 @@ def read_solar_forecast_kwh(
     )
     for source, sensor in candidates:
         if not sensor:
+            continue
+        if is_omnibattery_entity(hass, sensor):
+            # Runtime half of the options-flow guard
+            # (``config_flow._validate_solar_forecast_sensors``). The flow only
+            # covers the moment of saving: an entry stored before that check
+            # existed, or a YAML/restored entry, still resolves its own entity
+            # straight into the planner that produces it. Same pattern as the
+            # ``_solar_self_reference_warned`` guard in ConsumptionTracker.
+            if not getattr(
+                controller, "_solar_forecast_self_reference_warned", False
+            ):
+                _LOGGER.error(
+                    "Solar forecast sensor %s is an Omnibattery entity; refusing "
+                    "to read the integration's own output back into the planner "
+                    "(circular reference)",
+                    sensor,
+                )
+                controller._solar_forecast_self_reference_warned = True
             continue
         state = hass.states.get(sensor)
         value = _state_kwh(state)

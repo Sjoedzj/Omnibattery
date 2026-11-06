@@ -363,6 +363,21 @@ def _validate_solar_forecast_sensors(
     return errors
 
 
+def _would_be_self_referential(hass: HomeAssistant, key: str, sensor: str) -> bool:
+    """Return whether restoring ``sensor`` under ``key`` closes a loop.
+
+    Mirrors the validators that guard the *submitted* value, per field: the two
+    forecast keys use the broad :func:`is_omnibattery_entity` (see
+    ``_validate_solar_forecast_sensors``) and the production sensor uses
+    :func:`is_omnibattery_solar_entity` (see ``_validate_solar_production_sensor``).
+    """
+    if key in (CONF_SOLAR_FORECAST_SENSOR, CONF_SOLAR_FORECAST_REMAINING_SENSOR):
+        return is_omnibattery_entity(hass, sensor)
+    if key == CONF_SOLAR_PRODUCTION_SENSOR:
+        return is_omnibattery_solar_entity(hass, sensor)
+    return False
+
+
 def _restore_unrenderable_sensors(
     hass: HomeAssistant, user_input: dict[str, Any], stored: dict[str, Any]
 ) -> dict[str, Any]:
@@ -376,6 +391,11 @@ def _restore_unrenderable_sensors(
     decision, so the stored value survives. Clearing a sensor whose entity does
     exist keeps working, and a preserved dead reference is surfaced by the
     ``configured_sensor_missing`` Repairs issue.
+
+    A self-referential stored value is the one exception, even when its entity is
+    missing: the validators ran before this function and cannot see a value this
+    function invents, so preserving it would smuggle a circular input past them
+    and straight into the read path.
     """
     restored = dict(user_input)
     for key in (
@@ -388,6 +408,13 @@ def _restore_unrenderable_sensors(
         if restored.get(key) or not current:
             continue
         if hass.states.get(current) is None:
+            if _would_be_self_referential(hass, key, current):
+                _LOGGER.warning(
+                    "Options flow submitted %s empty while the stored sensor %s is "
+                    "one of our own entities - not restoring a circular reference",
+                    key, current,
+                )
+                continue
             _LOGGER.warning(
                 "Options flow submitted %s empty while %s does not exist - keeping "
                 "the stored sensor instead of clearing it",

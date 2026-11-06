@@ -2874,19 +2874,33 @@ class PricingManager:
                 0.0,
                 float(getattr(self._controller, "capacity_protection_limit", 0.0) or 0.0),
             ) / 1000.0
-            intervals = [
-                EnergyInterval(
-                    start,
-                    end,
-                    max(
-                        0.0,
-                        consumption[index]
-                        - limit_kw * (end - start).total_seconds() / 3600.0,
-                    )
-                    if held_until is not None and start < held_until
-                    else consumption[index],
-                    solar[index],
+
+            def _capacity_protected_interval(
+                start: datetime, end: datetime, index: int
+            ) -> EnergyInterval:
+                """Apply the peak-shaving hold without losing the demand.
+
+                Capacity protection lowers what the *battery* is projected to
+                serve while it holds; the grid carries the difference and the
+                house still consumes all of it.  Publishing the lowered figure
+                as the demand under-reports the forecast by exactly
+                ``limit_kw x`` the held hours.  The no-discharge window and the
+                price block keep the same contract through
+                ``_battery_blocked_interval``: ``consumption_kwh`` drives the
+                discharge simulation, ``demand_kwh`` is what the house really
+                uses.
+                """
+                demand = consumption[index]
+                if held_until is None or start >= held_until:
+                    return EnergyInterval(start, end, demand, solar[index])
+                reduced = max(
+                    0.0,
+                    demand - limit_kw * (end - start).total_seconds() / 3600.0,
                 )
+                return EnergyInterval(start, end, reduced, solar[index], demand)
+
+            intervals = [
+                _capacity_protected_interval(start, end, index)
                 for index, (start, end) in enumerate(boundaries)
             ]
             # A no-discharge window blocks the battery outright, peaks
@@ -5016,19 +5030,29 @@ class PricingManager:
         weekly_gap_kwh = (
             weekly_gap(coordinators_with_data) if callable(weekly_gap) else 0.0
         )
+        # Kept apart from the combined deficit: only the balance term is an
+        # optimisation the arbitrage margin may refuse.
+        balance_deficit_kwh = max(
+            0.0,
+            remaining_consumption_kwh - usable_now_kwh - remaining_solar_kwh,
+        )
         evening_deficit_kwh = min(
             energy_to_full_kwh,
-            max(
-                weekly_gap_kwh,
-                max(
-                    0.0,
-                    remaining_consumption_kwh - usable_now_kwh - remaining_solar_kwh,
-                ),
-            ),
+            max(weekly_gap_kwh, balance_deficit_kwh),
         )
         planned_evening_charge_kwh = calculations.calculate_planned_grid_charge_kwh(
             evening_deficit_kwh,
             energy_to_full_kwh,
+        )
+        # A weekly full charge is a battery-health requirement, not an
+        # optimisation: the BMS needs the pack at the top to balance the cells.
+        # When the weekly gap is the term that drives tonight's deficit (the sun
+        # fell short every day since the last full charge) the arbitrage margin
+        # must not be able to refuse the whole plan, otherwise the balance charge
+        # is skipped on exactly the days it exists for. Same class of exemption
+        # as the guaranteed floor below.
+        weekly_gap_active = (
+            weekly_gap_kwh > 0.0 and weekly_gap_kwh >= balance_deficit_kwh
         )
 
         if evening_deficit_kwh < EVENING_DEFICIT_THRESHOLD_KWH:
@@ -5111,11 +5135,12 @@ class PricingManager:
         )
         if (
             chronological_plan is not None
-            and decision_data.get("floor_active", False)
+            and (decision_data.get("floor_active", False) or weekly_gap_active)
         ):
             # Guaranteed-floor energy is not an optimisation, so the arbitrage
             # margin must not block it; only the user's explicit ceiling stays
             # authoritative. Mirrors the deficit path (engine.py:3600-3608).
+            # The weekly balance charge is the same kind of requirement.
             ceiling = self._controller.max_price_threshold
             chronological_plan = self._build_chronological_plan(
                 now=now,
@@ -5139,7 +5164,80 @@ class PricingManager:
             )
 
         if not selected:
-            _LOGGER.warning("Evening recharge: no slots below price threshold")
+            unit = self._get_price_unit()
+            margin = getattr(self._controller, "min_arbitrage_margin", None)
+            efficiency = getattr(
+                self._controller,
+                "round_trip_efficiency",
+                calculations.DEFAULT_ROUND_TRIP_EFFICIENCY,
+            )
+            expected_price = calculations.expected_discharge_price(slots, hours_needed)
+            # ``effective_charge_ceiling`` hands the arbitrage value back
+            # separately, and the docstring is explicit that the two are equal
+            # only when the arbitrage ceiling is the stricter one. Comparing them
+            # is therefore how the cause is known instead of guessed: the old
+            # message blamed the static threshold for every refusal, including
+            # the margin-gated ones that the margin gate itself had caused.
+            margin_applied = arb_ceiling is not None and (
+                ceiling is None or arb_ceiling <= ceiling
+            )
+            ceiling_text = "n/a" if ceiling is None else f"{float(ceiling):.4f} {unit}"
+            expected_text = (
+                "n/a" if expected_price is None else f"{float(expected_price):.4f} {unit}"
+            )
+            if margin_applied:
+                refusal_reason = "arbitrage_margin"
+                _LOGGER.warning(
+                    "Evening recharge: refused — the arbitrage margin caps the "
+                    "price at %s (expected discharge %s x round-trip %.2f - "
+                    "margin %.4f %s); %.2f kWh stays unpurchased",
+                    ceiling_text, expected_text, efficiency,
+                    float(margin or 0.0), unit, evening_deficit_kwh,
+                )
+            else:
+                refusal_reason = "price_threshold"
+                cheapest = min((s.price for s in slots), default=None)
+                cheapest_text = (
+                    "n/a" if cheapest is None else f"{float(cheapest):.4f} {unit}"
+                )
+                _LOGGER.warning(
+                    "Evening recharge: refused — all %d remaining slots price "
+                    "above the configured ceiling %s (cheapest %s, expected "
+                    "discharge %s); %.2f kWh stays unpurchased",
+                    len(slots), ceiling_text, cheapest_text, expected_text,
+                    evening_deficit_kwh,
+                )
+            # Nothing was armed, so leaving ``should_charge`` and
+            # ``planned_grid_charge_kwh`` standing made the dashboard and the
+            # diagnostics promise a charge that no slot would execute. The
+            # intent stays visible in its own fields; the decision tells the
+            # truth.
+            decision_data["should_charge"] = False
+            decision_data["planned_grid_charge_kwh"] = 0.0
+            decision_data["evening_recharge_refused"] = True
+            decision_data["evening_recharge_refusal_reason"] = refusal_reason
+            decision_data["evening_recharge_intent_kwh"] = planned_evening_charge_kwh
+            decision_data["evening_recharge_ceiling"] = ceiling
+            decision_data["evening_recharge_expected_discharge_price"] = expected_price
+            decision_data["evening_recharge_margin_applied"] = margin_applied
+            decision_data["reason"] = (
+                "Evening recharge refused: arbitrage margin"
+                if margin_applied
+                else "Evening recharge refused: price threshold"
+            )
+            await self._send_evening_recharge_notification(
+                evening_deficit_kwh,
+                [],
+                refusal={
+                    "reason": refusal_reason,
+                    "ceiling": ceiling,
+                    "expected_discharge_price": expected_price,
+                    "margin": margin,
+                    "round_trip_efficiency": efficiency,
+                    "planned_kwh": planned_evening_charge_kwh,
+                    "hours_needed": hours_needed,
+                },
+            )
             return
 
         # --- Merge into schedule ---
@@ -5207,9 +5305,15 @@ class PricingManager:
         await self._send_evening_recharge_notification(evening_deficit_kwh, selected)
 
     async def _send_evening_recharge_notification(
-        self, deficit_kwh: float, slots: list
+        self, deficit_kwh: float, slots: list, *, refusal: dict | None = None
     ) -> None:
-        """Send notification for the evening re-evaluation result."""
+        """Send notification for the evening re-evaluation result.
+
+        ``refusal`` carries the gate that stopped the top-up. The prioritised
+        notification is the only channel that reaches a phone, and a silent
+        refusal is indistinguishable from "nothing to do" — the user would wait
+        for a charge that was never armed.
+        """
         avg_soc = sum(
             (c.data.get("battery_soc", 0) or 0)
             for c in self._controller.coordinators
@@ -5226,6 +5330,7 @@ class PricingManager:
             slots,
             unit=self._get_price_unit(),
             avg_soc=avg_soc,
+            refusal=refusal,
         )
         await self._async_create_predictive_notification(
             title, message, f"{NOTIFICATION_ID_PREFIX}predictive_charging_evening_reeval"
