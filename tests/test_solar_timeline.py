@@ -7,11 +7,16 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from custom_components.omnibattery.pricing.solar_timeline import (
+    _validate_periods,
     build_boundaries,
     build_solar_timeline,
     normalize_timeline_weights,
+    provider_weights,
 )
-from custom_components.omnibattery.solar_forecast import SolarForecastPeriod
+from custom_components.omnibattery.solar_forecast import (
+    SolarForecastPeriod,
+    periods_from_wh_hours,
+)
 
 
 MADRID = ZoneInfo("Europe/Madrid")
@@ -269,3 +274,110 @@ def test_legacy_positional_shape_is_used_only_for_the_exact_horizon():
     )
     assert invalid.source == "sinusoidal"
     assert "legacy_shape_length" in (invalid.fallback_reason or "")
+
+
+def _hourly_periods(start, hours: int, energy_kwh: float) -> list[SolarForecastPeriod]:
+    return [
+        SolarForecastPeriod(
+            start + timedelta(hours=index),
+            start + timedelta(hours=index + 1),
+            energy_kwh,
+        )
+        for index in range(hours)
+    ]
+
+
+def test_provider_curve_reaching_tomorrow_is_not_a_gap():
+    """A 48 h provider curve (Solcast, Forecast.Solar) covers tomorrow too."""
+    solar_start, solar_end = _solar_window()
+    provider = _hourly_periods(solar_start, 12, 0.4) + _hourly_periods(
+        solar_start + timedelta(days=1), 12, 0.4
+    )
+    boundaries = build_boundaries(
+        datetime(2026, 8, 18, 9, 0, tzinfo=MADRID),
+        datetime(2026, 8, 18, 18, 0, tzinfo=MADRID),
+    )
+
+    assert _validate_periods(
+        provider, boundaries[0][0], boundaries[-1][1], solar_start, solar_end
+    ) == (True, None)
+
+    weights, reason = provider_weights(
+        boundaries, provider, solar_start=solar_start, solar_end=solar_end
+    )
+
+    assert reason is None
+    # Only today's window counts: nine daylight hours of 0.4 kWh.
+    assert sum(weights) == pytest.approx(0.4 * 9)
+
+
+def test_provider_gap_inside_today_is_still_rejected_next_to_tomorrow():
+    """Tomorrow's curve must not bless a real hole in today's daylight."""
+    solar_start, solar_end = _solar_window()
+    provider = [
+        SolarForecastPeriod(solar_start, solar_start + timedelta(hours=4), 1.6),
+        SolarForecastPeriod(
+            solar_start + timedelta(hours=6), solar_start + timedelta(hours=12), 2.4
+        ),
+    ] + _hourly_periods(solar_start + timedelta(days=1), 12, 0.4)
+
+    assert _validate_periods(
+        provider, solar_start, solar_end, solar_start, solar_end
+    ) == (False, "provider_gap")
+
+
+def test_sparse_daylight_curve_is_still_rejected_for_coverage():
+    """Tomorrow's periods must not paper over a thin today either."""
+    solar_start, solar_end = _solar_window()
+    # Half-hour periods with 40-minute holes: no gap exceeds an hour, yet only
+    # 300 of the 720 daylight minutes carry energy.
+    sparse = [
+        SolarForecastPeriod(
+            solar_start + timedelta(minutes=70 * index),
+            solar_start + timedelta(minutes=70 * index + 30),
+            0.5,
+        )
+        for index in range(10)
+    ] + _hourly_periods(solar_start + timedelta(days=1), 12, 0.4)
+
+    assert _validate_periods(
+        sparse, solar_start, solar_end, solar_start, solar_end
+    ) == (False, "provider_coverage")
+
+
+def test_three_summed_arrays_with_one_off_grid_key_keep_an_hourly_spread():
+    """#558: the reported symptom — an hour of energy in one quarter hour."""
+    solar_start, solar_end = _solar_window()
+    boundaries = build_boundaries(
+        datetime(2026, 8, 18, 9, 0, tzinfo=MADRID),
+        datetime(2026, 8, 18, 18, 0, tzinfo=MADRID),
+    )
+    # Two arrays publish hourly; the third publishes its noon key ten minutes
+    # late, so the summed curve holds an off-grid key.
+    wh_hours = {
+        (solar_start + timedelta(hours=index)).isoformat(): (
+            2000.0 if index == 4 else 3000.0
+        )
+        for index in range(12)
+    }
+    wh_hours[(solar_start + timedelta(hours=4, minutes=10)).isoformat()] = 1000.0
+    provider = periods_from_wh_hours(wh_hours)
+
+    assert [period.end - period.start for period in provider] == [timedelta(hours=1)] * 12
+
+    result = build_solar_timeline(
+        boundaries,
+        27.0,
+        provider_periods=provider,
+        solar_start=solar_start,
+        solar_end=solar_end,
+        mode="active",
+    )
+
+    assert result.source == "provider"
+    assert result.fallback_reason is None
+    assert sum(result.intervals_kwh) == pytest.approx(27.0)
+    # No quarter is empty and no quarter carries half of its own hour.
+    assert all(value > 0.0 for value in result.intervals_kwh)
+    noon = result.intervals_kwh[12:16]  # 12:00-13:00, three hours into the horizon
+    assert max(noon) < 0.5 * sum(noon)

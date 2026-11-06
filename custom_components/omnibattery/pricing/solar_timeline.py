@@ -225,14 +225,18 @@ def _validate_periods(
     cursor = light_start
     for period in ordered:
         p_start, p_end = _timestamp(period.start), _timestamp(period.end)
-        if p_end <= cursor:
+        if p_end <= cursor or p_start >= light_end:
+            # A provider that also publishes tomorrow ends its curve after this
+            # window; those periods cannot close a gap inside today's daylight.
             continue
         if p_start > cursor:
             # A gap larger than one hour inside the daylight horizon is unsafe.
             if p_start - cursor > MAX_PROVIDER_GAP_SECONDS:
                 return False, "provider_gap"
         covered += _overlap(p_start, p_end, light_start, light_end)
-        cursor = max(cursor, p_end)
+        # Keep the cursor inside the window too, so a period reaching past
+        # sunset cannot hide the gap between the last daylight period and it.
+        cursor = min(max(cursor, p_end), light_end)
     if light_end - cursor > MAX_PROVIDER_GAP_SECONDS:
         return False, "provider_gap"
     covered = min(covered, light_end - light_start)
