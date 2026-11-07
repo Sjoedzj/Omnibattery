@@ -434,6 +434,31 @@ def _panel_solar_entity(coordinators, ent_reg, external_entity: str | None) -> s
     return external_entity
 
 
+async def _panel_cache_bust(hass: HomeAssistant, js_file) -> str:
+    """Return the token that busts the browser cache for the panel module.
+
+    The integration version from ``manifest.json`` is the primary token: a
+    version bump always produces a new ``?v=`` URL, even when a HACS update
+    extracts the files with an mtime that is identical (or older) than the
+    previous install, which made the browser keep serving the old JS. The
+    file mtime remains the fallback for a development checkout whose manifest
+    cannot be read.
+    """
+    try:
+        from homeassistant.loader import async_get_integration
+
+        integration = await async_get_integration(hass, DOMAIN)
+        version = str(integration.version or "").strip()
+        if version:
+            return version
+    except Exception:  # noqa: BLE001 - never block the panel registration
+        pass
+    try:
+        return str(int(js_file.stat().st_mtime))
+    except Exception:  # noqa: BLE001 - never block the panel registration
+        return "0"
+
+
 async def _async_register_frontend_panel(hass: HomeAssistant, entry: ConfigEntry | None = None) -> None:
     """Register (or refresh) the custom sidebar panel.
 
@@ -444,9 +469,10 @@ async def _async_register_frontend_panel(hass: HomeAssistant, entry: ConfigEntry
     forwarded to the panel so the energy-flow diagram can wire its Grid/Home
     nodes without hardcoding.
 
-    The module URL is cache-busted by the JS file's mtime so any edit to the
-    dashboard is picked up by the browser after a reload — without needing an
-    integration version bump.
+    The module URL is cache-busted by the integration version from
+    ``manifest.json``, so a release bump always makes the browser fetch the new
+    JS (an extracted zip can keep an old mtime). The file mtime is only the
+    fallback when the manifest cannot be read.
     Non-critical: failures are logged but never block integration setup.
     """
     try:
@@ -465,18 +491,10 @@ async def _async_register_frontend_panel(hass: HomeAssistant, entry: ConfigEntry
             )
             domain_data[_STATIC_REGISTERED_KEY] = True
 
-        # Cache-bust by the JS file mtime (changes on every edit/deploy); fall
-        # back to the integration version if the file can't be stat'd.
+        # Cache-bust by the integration version from the manifest (mtime only
+        # as a fallback), so a version bump always yields fresh JS.
         js_file = frontend_dir / "marstek-panel.js"
-        try:
-            cache_bust = str(int(js_file.stat().st_mtime))
-        except Exception:  # noqa: BLE001
-            from homeassistant.loader import async_get_integration
-
-            try:
-                cache_bust = (await async_get_integration(hass, DOMAIN)).version or "0"
-            except Exception:  # noqa: BLE001
-                cache_bust = "0"
+        cache_bust = await _panel_cache_bust(hass, js_file)
 
         panel_config = {"domain": DOMAIN, "title": PANEL_TITLE}
         if entry is not None:

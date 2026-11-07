@@ -2665,17 +2665,21 @@ class MarstekVenusPanel extends HTMLElement {
     viewport.setAttribute("aria-label", this._t("dailyOperationTitle"));
     const stage = document.createElement("div");
     stage.className = "daily-op-stage";
+    // One horizontal scale for the whole scrolled stage: the day chart and the
+    // price strip below it use this same viewBox width, so quarter N of the
+    // strip always sits under quarter N of the chart.
+    const chartWidth = DAILY_OPERATION_TOTAL_INTERVALS * 10;
 
     const uid = `mv-daily-op-${(this._dailyOpUid = (this._dailyOpUid || 0) + 1)}`;
 
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.classList.add("daily-op-svg");
-    svg.setAttribute("viewBox", `0 0 ${DAILY_OPERATION_TOTAL_INTERVALS * 10} 190`);
+    svg.setAttribute("viewBox", `0 0 ${chartWidth} 190`);
     svg.setAttribute("preserveAspectRatio", "none");
     svg.setAttribute("aria-hidden", "true");
     svg.innerHTML =
       `<g class="daily-op-grid-lines">` +
-      Array.from({ length: 6 }, (_, i) => `<line x1="0" y1="${32 + i * 26.4}" x2="${DAILY_OPERATION_TOTAL_INTERVALS * 10}" y2="${32 + i * 26.4}"/>`).join("") +
+      Array.from({ length: 6 }, (_, i) => `<line x1="0" y1="${32 + i * 26.4}" x2="${chartWidth}" y2="${32 + i * 26.4}"/>`).join("") +
       Array.from({ length: DAILY_OPERATION_TOTAL_HOURS + 1 }, (_, i) => `<line class="daily-op-hour-line" x1="${i * 40}" y1="24" x2="${i * 40}" y2="170"/>`).join("") +
       `</g>` +
       `<path class="daily-op-path daily-op-path-solar-actual" fill="none"></path>` +
@@ -2685,6 +2689,42 @@ class MarstekVenusPanel extends HTMLElement {
       `<path class="daily-op-path daily-op-path-soc-actual" fill="none"></path>` +
       `<path class="daily-op-path daily-op-path-soc-forecast" fill="none"></path>`;
     stage.appendChild(svg);
+
+    // Price strip: a thin band directly under the day chart and inside the
+    // same scrolling stage. It shares the horizontal scale (and therefore the
+    // viewport's scrollbar) with the quarter cells above, but never the kWh
+    // scale, so a cheap quarter and a charge action can be compared by
+    // position alone. The band is decorative next to the chart: aria-hidden,
+    // no tabstop and no scrollbar of its own. The quarter cells keep exposing
+    // the price in their tooltip and aria-label.
+    const priceStrip = document.createElement("div");
+    priceStrip.className = "daily-op-price-strip";
+    priceStrip.setAttribute("aria-hidden", "true");
+    const priceSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    priceSvg.classList.add("daily-op-price-svg");
+    priceSvg.setAttribute("viewBox", `0 0 ${chartWidth} ${DAILY_OPERATION_PRICE_STRIP_HEIGHT}`);
+    priceSvg.setAttribute("preserveAspectRatio", "none");
+    priceSvg.setAttribute("aria-hidden", "true");
+    const priceZero = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    priceZero.classList.add("daily-op-price-zero");
+    priceZero.setAttribute("x1", "0");
+    priceZero.setAttribute("x2", String(chartWidth));
+    priceZero.setAttribute("y1", String(DAILY_OPERATION_PRICE_BOTTOM));
+    priceZero.setAttribute("y2", String(DAILY_OPERATION_PRICE_BOTTOM));
+    priceSvg.appendChild(priceZero);
+    const priceBars = [];
+    for (let index = 0; index < DAILY_OPERATION_BASE_INTERVALS; index++) {
+      const bar = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      bar.classList.add("daily-op-price-bar");
+      bar.setAttribute("x", String(index * 10 + 1));
+      bar.setAttribute("width", "8");
+      bar.setAttribute("y", String(DAILY_OPERATION_PRICE_BOTTOM));
+      bar.setAttribute("height", "0");
+      priceSvg.appendChild(bar);
+      priceBars.push(bar);
+    }
+    priceStrip.appendChild(priceSvg);
+    stage.appendChild(priceStrip);
 
     // Keep the current-time marker in HTML so its label has a stable pixel
     // size instead of stretching with the SVG viewBox.
@@ -2775,39 +2815,6 @@ class MarstekVenusPanel extends HTMLElement {
     grid.append(labels, hours);
     stage.appendChild(grid);
 
-    // Price strip: a thin band under the day chart with its own axis. It shares
-    // the horizontal scale (and therefore the scrolling viewport) with the
-    // quarter cells above, but never the kWh scale, so a cheap quarter and a
-    // charge action can be compared by position alone.
-    const priceStrip = document.createElement("div");
-    priceStrip.className = "daily-op-price-strip";
-    priceStrip.setAttribute("aria-hidden", "true");
-    const priceSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    priceSvg.classList.add("daily-op-price-svg");
-    priceSvg.setAttribute("viewBox", `0 0 ${DAILY_OPERATION_TOTAL_INTERVALS * 10} ${DAILY_OPERATION_PRICE_STRIP_HEIGHT}`);
-    priceSvg.setAttribute("preserveAspectRatio", "none");
-    priceSvg.setAttribute("aria-hidden", "true");
-    const priceZero = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    priceZero.classList.add("daily-op-price-zero");
-    priceZero.setAttribute("x1", "0");
-    priceZero.setAttribute("x2", String(DAILY_OPERATION_TOTAL_INTERVALS * 10));
-    priceZero.setAttribute("y1", String(DAILY_OPERATION_PRICE_BOTTOM));
-    priceZero.setAttribute("y2", String(DAILY_OPERATION_PRICE_BOTTOM));
-    priceSvg.appendChild(priceZero);
-    const priceBars = [];
-    for (let index = 0; index < DAILY_OPERATION_BASE_INTERVALS; index++) {
-      const bar = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      bar.classList.add("daily-op-price-bar");
-      bar.setAttribute("x", String(index * 10 + 1));
-      bar.setAttribute("width", "8");
-      bar.setAttribute("y", String(DAILY_OPERATION_PRICE_BOTTOM));
-      bar.setAttribute("height", "0");
-      priceSvg.appendChild(bar);
-      priceBars.push(bar);
-    }
-    priceStrip.appendChild(priceSvg);
-    stage.appendChild(priceStrip);
-
     const tooltip = document.createElement("div");
     tooltip.className = "daily-op-tooltip";
     tooltip.id = `${uid}-tooltip`;
@@ -2825,10 +2832,12 @@ class MarstekVenusPanel extends HTMLElement {
     layout.appendChild(socAxis);
     // Own axis for the price strip: a separate scale in the left column, exactly
     // below the kWh axis, so both bands stay readable without sharing a scale.
+    // It is rendered even when no quarter has a price yet: an always-present
+    // band with its axis and unit is honest, while a disappearing band is
+    // indistinguishable from a rendering bug.
     const priceAxis = document.createElement("div");
     priceAxis.className = "daily-op-price-axis";
     priceAxis.setAttribute("aria-hidden", "true");
-    priceAxis.hidden = true;
     priceAxis.innerHTML =
       `<small class="daily-op-price-unit"></small>` +
       `<div class="daily-op-price-axis-ticks"><span></span><span></span></div>`;
@@ -3895,7 +3904,17 @@ class MarstekVenusPanel extends HTMLElement {
       if (value != null) visible.push(value);
     }
     if (!visible.length) {
-      for (const bar of ref.priceBars) bar.style.display = "none";
+      // The band and its axis stay in place; only the bars are empty. Reset
+      // their geometry too, so a chart that loses its prices never keeps bars
+      // from the previous snapshot behind a later re-render.
+      for (const bar of ref.priceBars) {
+        bar.style.display = "none";
+        bar.setAttribute("y", String(DAILY_OPERATION_PRICE_BOTTOM));
+        bar.setAttribute("height", "0");
+        bar.classList.remove("daily-op-price-negative");
+      }
+      ref.priceZero.setAttribute("y1", String(DAILY_OPERATION_PRICE_BOTTOM));
+      ref.priceZero.setAttribute("y2", String(DAILY_OPERATION_PRICE_BOTTOM));
       if (ref.priceAxisTicks) for (const tick of ref.priceAxisTicks) tick.textContent = "";
       return;
     }
@@ -3993,17 +4012,23 @@ class MarstekVenusPanel extends HTMLElement {
     }
     ref.card.hidden = false;
     ref.hourlyBalanceLegend.hidden = !snapshot.hourlyBalanceEnabled;
-    // Without a single priced quarter (no dynamic-price integration) the whole
-    // strip and its axis stay hidden instead of showing an empty band. Guarded
-    // so a partially built card (or a test double) cannot break the patch.
+    // The price band is always rendered, inside the chart's scroll container.
+    // Without a single priced quarter only its bars stay empty; the axis and
+    // its unit keep explaining what the band is. Hiding the whole band made
+    // "no price data" look exactly like "the feature is missing", which is how
+    // the strip disappeared in the field. Guarded so a partially built card
+    // (or a test double) cannot break the patch.
     if (ref.priceLegend) ref.priceLegend.hidden = !snapshot.hasPrice;
-    if (ref.priceAxis) ref.priceAxis.hidden = !snapshot.hasPrice;
+    if (ref.priceAxis) ref.priceAxis.hidden = false;
+    if (ref.priceAxisUnit) {
+      // The band always names its unit; the integration's default currency is
+      // the sane fallback when the pricing manager cannot be reached.
+      ref.priceAxisUnit.textContent = snapshot.priceUnit || "€/kWh";
+    }
+    // Kept as a state marker only: no CSS may use it to hide the band, because
+    // the band must stay visible when every quarter is unpriced.
     if (ref.stage && ref.stage.classList) {
       ref.stage.classList.toggle("daily-op-has-price", snapshot.hasPrice);
-    }
-    if (ref.priceAxisUnit) {
-      ref.priceAxisUnit.textContent = snapshot.hasPrice && snapshot.priceUnit
-        ? snapshot.priceUnit : "";
     }
     const badgeText = `${this._t("dailyOperationReal")} / ${this._t("dailyOperationForecast")}`;
     ref.badge.querySelector("span:last-child").textContent = badgeText;
@@ -7614,7 +7639,7 @@ class MarstekVenusPanel extends HTMLElement {
       .daily-op-badge-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
       .daily-op-badge-stale { color: oklch(0.82 0.14 75); border-color: oklch(0.82 0.14 75 / .4); background: oklch(0.82 0.14 75 / .1); }
       .daily-op-notice { margin: 0 0 9px; padding: 7px 10px; border: 1px solid oklch(0.82 0.14 75 / .35); border-radius: 9px; color: oklch(0.82 0.14 75); background: oklch(0.82 0.14 75 / .08); font-size: 11px; line-height: 1.4; }
-      .daily-op-layout { display: grid; grid-template-columns: 62px minmax(0, 1fr) 42px; grid-template-rows: auto auto; gap: 0; min-width: 0; }
+      .daily-op-layout { display: grid; grid-template-columns: 62px minmax(0, 1fr) 42px; grid-template-rows: auto auto; gap: 0; min-width: 0; padding-bottom: 16px; }
       .daily-op-yaxis { grid-area: 1 / 1; position: relative; height: 190px; color: var(--ink-dim); font-size: 10px; line-height: 1; white-space: nowrap; }
       .daily-op-yaxis small { position: absolute; top: 7px; right: 8px; font-size: 9px; writing-mode: horizontal-tb; transform: none; }
       .daily-op-yaxis-ticks { position: absolute; top: 32px; right: 8px; bottom: 26px; display: flex; flex-direction: column; align-items: flex-end; justify-content: space-between; }
@@ -7624,13 +7649,18 @@ class MarstekVenusPanel extends HTMLElement {
       .daily-op-price-axis { grid-area: 2 / 1; position: relative; height: 46px; color: var(--ink-dim); font-size: 9px; line-height: 1; white-space: nowrap; }
       .daily-op-price-axis small { position: absolute; top: 0; right: 8px; font-size: 9px; color: var(--ink-dim); }
       .daily-op-price-axis-ticks { position: absolute; top: 9px; right: 8px; bottom: 9px; display: flex; flex-direction: column; align-items: flex-end; justify-content: space-between; font-variant-numeric: tabular-nums; }
-      .daily-op-viewport { grid-area: 1 / 2 / span 2 / auto; position: relative; min-width: 0; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x proximity; scrollbar-width: thin; overscroll-behavior-x: contain; outline: none; }
+      /* 236px of scrolled content (190px chart + 46px price strip) plus room
+         for the horizontal scrollbar, so the bar always sits *below* the strip
+         instead of clipping its bottom ticks. The layout's bottom padding
+         keeps that overflow inside the card. */
+      .daily-op-viewport { grid-area: 1 / 2 / span 2 / auto; height: 252px; position: relative; min-width: 0; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x proximity; scrollbar-width: thin; overscroll-behavior-x: contain; outline: none; }
       .daily-op-viewport:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-line); border-radius: 8px; }
-      .daily-op-stage { position: relative; width: 150%; min-width: 1440px; height: 190px; }
-      .daily-op-stage.daily-op-has-price { height: 236px; }
+      .daily-op-stage { position: relative; width: 150%; min-width: 1440px; height: 236px; }
       .daily-op-svg { position: absolute; inset: 0; z-index: 1; display: block; width: 100%; height: 190px; overflow: visible; pointer-events: none; }
-      .daily-op-price-strip { position: absolute; left: 0; right: 0; top: 190px; z-index: 1; display: none; height: 46px; border-top: 1px dashed var(--line-strong); }
-      .daily-op-stage.daily-op-has-price .daily-op-price-strip { display: block; }
+      /* Always rendered: the strip is part of the chart's own scroll content,
+         directly under the 190px chart band. It has no overflow of its own, so
+         it can only ever move with the viewport's single horizontal scrollbar. */
+      .daily-op-price-strip { position: absolute; left: 0; right: 0; top: 190px; z-index: 1; display: block; height: 46px; border-top: 1px dashed var(--line-strong); }
       .daily-op-price-svg { position: absolute; inset: 0; display: block; width: 100%; height: 46px; overflow: visible; pointer-events: none; }
       .daily-op-price-bar { fill: color-mix(in oklab, var(--daily-op-price) 62%, transparent); }
       .daily-op-price-bar.daily-op-price-negative { fill: color-mix(in oklab, var(--daily-op-discharge) 62%, transparent); }
@@ -7646,8 +7676,7 @@ class MarstekVenusPanel extends HTMLElement {
       .daily-op-path-soc-actual { stroke: var(--daily-op-soc); }
       .daily-op-path-soc-forecast { stroke: var(--daily-op-soc); stroke-dasharray: 5 4; opacity: .82; }
       .daily-op-grid { position: absolute; inset: 0; z-index: 2; display: grid; grid-template-rows: 24px 146px 20px; pointer-events: none; }
-      .daily-op-now-marker { position: absolute; z-index: 5; top: 3px; bottom: 20px; width: 0; pointer-events: none; }
-      .daily-op-stage.daily-op-has-price .daily-op-now-marker { bottom: 66px; }
+      .daily-op-now-marker { position: absolute; z-index: 5; top: 3px; bottom: 66px; width: 0; pointer-events: none; }
       .daily-op-now-marker::before { content: ""; position: absolute; top: 21px; bottom: 0; left: 0; border-left: 1.5px solid var(--accent); }
       .daily-op-now-marker::after { content: ""; position: absolute; top: 18px; left: -3px; width: 7px; height: 7px; border: 1px solid var(--bg-1); border-radius: 50%; background: var(--accent); }
       .daily-op-now-text { position: absolute; top: 0; left: 0; transform: translateX(-50%); padding: 2px 7px; border: 1px solid var(--accent-line); border-radius: 999px; background: var(--bg-2); color: var(--accent); box-shadow: 0 2px 8px oklch(0 0 0 / .22); font-size: 9px; line-height: 14px; font-weight: 700; letter-spacing: .01em; white-space: nowrap; }

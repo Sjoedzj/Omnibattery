@@ -1667,6 +1667,26 @@ def _timeline_duration_series(value: object) -> list[dict[str, float]]:
     return result[:_DAILY_OPERATION_INTERVAL_COUNT]
 
 
+def _timeline_pricing(controller: object) -> object | None:
+    """Return the pricing manager the controller actually owns.
+
+    The controller keeps it as the private ``_pricing_mgr`` (the same manager
+    that writes ``_price_data_status`` for the predictive-charging status
+    sensor), while older adapters and test doubles expose it as ``pricing``.
+    Reading only ``pricing`` made every price read silently fall back to "no
+    slots": ``price_kwh`` stayed a list of 96 ``None`` values and
+    ``price_unit`` was ``None`` even though the prices were loaded.
+
+    A missing pricing manager is not an error: the daily timeline is published
+    with an all-``None`` curve whenever dynamic pricing is not configured.
+    """
+    for name in ("pricing", "_pricing_mgr", "pricing_manager", "_pricing_manager"):
+        pricing = _timeline_read(controller, name, _TIMELINE_MISSING)
+        if pricing is not _TIMELINE_MISSING and pricing is not None:
+            return pricing
+    return None
+
+
 def _timeline_price_slots(controller: object) -> list[object]:
     """Return the price slots of today, including the quarters already past.
 
@@ -1676,8 +1696,8 @@ def _timeline_price_slots(controller: object) -> list[object]:
     engine gained an ``include_past`` switch for this read. A pricing stand-in
     without that parameter still gets its future-only list instead of no curve.
     """
-    pricing = _timeline_read(controller, "pricing", _TIMELINE_MISSING)
-    if pricing is _TIMELINE_MISSING or pricing is None:
+    pricing = _timeline_pricing(controller)
+    if pricing is None:
         return []
     getter = _timeline_read(pricing, "get_future_price_slots", _TIMELINE_MISSING)
     if getter is _TIMELINE_MISSING or not callable(getter):
@@ -1705,8 +1725,8 @@ def _timeline_price_slots(controller: object) -> list[object]:
 
 def _timeline_price_unit(controller: object) -> str | None:
     """Return the price unit label (``€/kWh``) so the panel can show it."""
-    pricing = _timeline_read(controller, "pricing", _TIMELINE_MISSING)
-    if pricing is _TIMELINE_MISSING or pricing is None:
+    pricing = _timeline_pricing(controller)
+    if pricing is None:
         return None
     getter = _timeline_read(pricing, "_get_price_unit", _TIMELINE_MISSING)
     if getter is _TIMELINE_MISSING or not callable(getter):
