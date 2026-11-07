@@ -24,6 +24,15 @@ class EnergyInterval:
     end: datetime
     consumption_kwh: float
     solar_kwh: float
+    # Consumption the published forecast shows when the battery may not
+    # discharge: ``consumption_kwh`` is zeroed for the simulation, but the
+    # household still consumes.  ``None`` means "same as consumption_kwh".
+    demand_kwh: float | None = None
+    # Solar the published forecast shows when the battery may not discharge.
+    # ``solar_kwh`` keeps the netted surplus the simulation uses; this field
+    # carries the solar the graph must display.  ``None`` means "same as
+    # solar_kwh".
+    solar_publication_kwh: float | None = None
 
     def __post_init__(self) -> None:
         if self.end <= self.start:
@@ -32,18 +41,40 @@ class EnergyInterval:
             value = float(getattr(self, name))
             if not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} must be finite and non-negative")
+        for name in ("demand_kwh", "solar_publication_kwh"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            parsed = float(value)
+            if not math.isfinite(parsed) or parsed < 0:
+                raise ValueError(f"{name} must be finite and non-negative")
 
     def with_battery_idle(self) -> "EnergyInterval":
         """Interval in which the battery may not discharge.
 
         The grid carries the load the battery would have covered, but the
         household still consumes solar first: only the surplus charges (#616).
+        ``consumption_kwh`` and ``solar_kwh`` keep those netted values because
+        the simulation must not change; ``demand_kwh`` and
+        ``solar_publication_kwh`` carry the original consumption and solar so
+        the published graph can show them (#616).  Chained safely: a second
+        block preserves the already-recorded originals.
         """
+        demand = (
+            self.demand_kwh if self.demand_kwh is not None else self.consumption_kwh
+        )
+        published_solar = (
+            self.solar_publication_kwh
+            if self.solar_publication_kwh is not None
+            else self.solar_kwh
+        )
         return EnergyInterval(
             self.start,
             self.end,
             0.0,
             max(0.0, self.solar_kwh - self.consumption_kwh),
+            demand,
+            published_solar,
         )
 
 

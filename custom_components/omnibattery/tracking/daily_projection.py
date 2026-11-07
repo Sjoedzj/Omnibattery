@@ -39,6 +39,35 @@ def _finite(value: Any, default: float = 0.0) -> float:
     return parsed if math.isfinite(parsed) else default
 
 
+def _published_consumption(interval: Any) -> float:
+    """Demand to publish, independent of whether the battery may discharge.
+
+    The planner zeroes ``consumption_kwh`` on intervals where a price block or a
+    no-discharge window stops the battery, because that interval drains nothing.
+    The household demand does not disappear with it, so the published forecast
+    reads the demand the interval carries instead.  Intervals that were never
+    blocked report the same value either way.
+    """
+    demand = getattr(interval, "demand_kwh", None)
+    if demand is None:
+        demand = getattr(interval, "consumption_kwh", 0.0)
+    return _finite(demand)
+
+
+def _published_solar(interval: Any) -> float:
+    """Solar to publish, independent of whether the battery may discharge.
+
+    A blocked interval keeps ``solar_kwh`` netted against the household
+    consumption for the simulation (#616).  The graph still has to show the
+    solar forecast itself, which rides along in ``solar_publication_kwh``.  An
+    unblocked interval has no such field and reports ``solar_kwh`` unchanged.
+    """
+    publication = getattr(interval, "solar_publication_kwh", None)
+    if publication is None:
+        publication = getattr(interval, "solar_kwh", 0.0)
+    return _finite(publication)
+
+
 @dataclass(frozen=True)
 class DailyOperationProjectionRequest:
     """Read-only inputs needed to materialize a Daily Operation projection."""
@@ -164,6 +193,10 @@ def build_daily_operation_projection(
         ProjectionIntervalInput(
             start=remaining_start,
             end=interval.end,
+            # Deliberately the netted simulation fields, never the publication
+            # fields: ``simulate_battery_projection`` and the SOC calculation
+            # must keep seeing exactly what the planner simulated on
+            # v1.6.0b1.  The publication fields only feed ``full_forecasts``.
             consumption_kwh=_finite(getattr(interval, "consumption_kwh", 0.0))
             * remaining_ratio,
             solar_kwh=_finite(getattr(interval, "solar_kwh", 0.0)) * remaining_ratio,
@@ -177,11 +210,12 @@ def build_daily_operation_projection(
         )
     ]
     # The simulation must only see the energy left in an in-progress interval,
-    # but the published forecast series has to stay a full-quarter quantity.
+    # but the published forecast series has to stay a full-quarter quantity and
+    # show the energy a blocked interval really carries (#616, #754).
     full_forecasts = [
         (
-            _finite(getattr(interval, "solar_kwh", 0.0)),
-            _finite(getattr(interval, "consumption_kwh", 0.0)),
+            _published_solar(interval),
+            _published_consumption(interval),
         )
         for interval, _remaining_start, _remaining_ratio in remaining_intervals
     ]
