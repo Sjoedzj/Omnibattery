@@ -593,6 +593,28 @@ def _timeline_int(value: object) -> int | None:
     return max(0, int(number))
 
 
+# The four energy series whose shape is summarised in the diagnostics download.
+# Only a per-series summary travels along: the 96-cell arrays themselves must
+# stay out of the dump, because a small download is a deliberate property.
+_TIMELINE_SERIES_SPAN_KEYS = (
+    "consumption_forecast_kwh",
+    "solar_forecast_kwh",
+    "solar_actual_kwh",
+    "consumption_actual_kwh",
+)
+
+# A measured flow at or below this is a zero for the graph; a cell without a
+# measurement is ``None`` and is never folded into the zero count.
+_TIMELINE_ZERO_EPSILON = 0.0001
+
+
+def _timeline_quarter_label(index: int | None) -> str | None:
+    """Format a 15-minute quarter index as ``HH:MM`` (local clock time)."""
+    if index is None:
+        return None
+    return f"{index // 4:02d}:{(index % 4) * 15:02d}"
+
+
 def _timeline_scalar(value: object) -> object:
     """Keep optional controller status fields scalar and JSON-safe."""
     safe = _json_safe(value)
@@ -628,7 +650,10 @@ def _daily_operation_timeline_summary(controller) -> dict[str, Any]:
     The entity adapter owns the compatibility work for public/legacy manager
     names and duck-typed snapshots. This function only projects its DTO into
     diagnostic metadata and counts; it deliberately never returns ``series``
-    or ``operations`` and never reads a manager/store attribute directly.
+    or ``operations`` and never reads a manager/store attribute directly. The
+    only trace of the series is ``series_spans``: a bounded, per-series shape
+    (present/zero counts and the first/last non-zero quarter), never the
+    arrays themselves.
     """
     try:
         from .sensor import _daily_operation_timeline_attributes
@@ -678,6 +703,7 @@ def _daily_operation_timeline_summary(controller) -> dict[str, Any]:
                 "overlap_double": 0,
                 "overlap_triple": 0,
             },
+            "series_spans": {},
             "restoration": {},
             "stale": None,
             "stale_reason": None,
@@ -748,6 +774,43 @@ def _daily_operation_timeline_summary(controller) -> dict[str, Any]:
         if isinstance(values, (list, tuple)) and index < len(values):
             return values[index]
         return None
+
+    def _series_span(values: object) -> dict[str, Any]:
+        """Summarise one 96-cell energy series without exporting the array.
+
+        ``None`` means "no measurement in this quarter"; it is neither present
+        nor zero. A measured ``0`` *is* present and counts as zero, and that
+        difference is the whole reason this summary exists.
+        """
+        present_cells = 0
+        zero_cells = 0
+        first_nonzero: int | None = None
+        last_nonzero: int | None = None
+        leading_zero_run = 0
+        for index in range(96):
+            number = _safe_number(_at(values, index))
+            if number is None:
+                # An absent cell is not a zero and does not itself end the
+                # leading zero run; only a non-zero measurement does.
+                continue
+            present_cells += 1
+            if number <= _TIMELINE_ZERO_EPSILON:
+                zero_cells += 1
+                if first_nonzero is None:
+                    leading_zero_run += 1
+                continue
+            if first_nonzero is None:
+                first_nonzero = index
+            last_nonzero = index
+        return {
+            "present_cells": _timeline_int(present_cells),
+            "zero_cells": _timeline_int(zero_cells),
+            "first_nonzero_quarter": first_nonzero,
+            "first_nonzero_time": _timeline_quarter_label(first_nonzero),
+            "last_nonzero_quarter": last_nonzero,
+            "last_nonzero_time": _timeline_quarter_label(last_nonzero),
+            "first_zero_run_end": _timeline_int(leading_zero_run),
+        }
 
     real_cells = 0
     planned_cells = 0
@@ -887,6 +950,12 @@ def _daily_operation_timeline_summary(controller) -> dict[str, Any]:
             "actual_triple_overlaps": actual_triple,
             "planned_double_overlaps": planned_double,
             "planned_triple_overlaps": planned_triple,
+        },
+        # Bounded per-series shape only: where the zeros stop and how long the
+        # leading zero stretch is. Four keys, seven scalars, no 96-cell arrays.
+        "series_spans": {
+            key: _series_span(series.get(key))
+            for key in _TIMELINE_SERIES_SPAN_KEYS
         },
         "restoration": payload.get("restoration") or {},
         "stale": payload.get("stale"),
