@@ -30,7 +30,11 @@ from datetime import datetime
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
-from ..const import CHARGE_EFFICIENCY, PREDICTIVE_MODE_DYNAMIC_PRICING
+from ..const import (
+    CHARGE_EFFICIENCY,
+    PREDICTIVE_MODE_DYNAMIC_PRICING,
+    normalize_solar_profile_mode,
+)
 from ..pricing.curtailment import BatterySnapshot, distribute_solar_forecast
 from ..pricing.discharge_reserve import (
     ReservePlan,
@@ -72,6 +76,34 @@ GUARD_FLEET_UNKNOWN = "battery_state_unknown"
 # raw AC surplus first would discount sun that was never going to fit in the
 # battery anyway, and read as if the uncertainty had been accounted for.
 SURPLUS_CREDIT_FACTOR = 0.75
+
+# The PV credit cancels part of a claim, and the claims are the dearest hours
+# ahead in descending order. That priority is the whole point of the reserve: a
+# battery full at noon has to keep the 18:15 peak covered first, then the next
+# dearest hour, and so on. A credit may only overrule that priority when the sun
+# it rests on is *proven* to be coming, so this is the bar the learned solar
+# profile has to clear before any credit is spent:
+#
+# * the profile is ``mature`` -- enough recent, high-quality days to describe
+#   today's shape at all, and
+# * it covers at least this share of the daylight still ahead of ``now``.
+#
+# Both halves matter and neither is a formality. The user's own install reports
+# ``fallback_reason: insufficient_days``, i.e. the integration already knows its
+# own forecast is a guess, and a forecast that cannot see the hours it is
+# cancelling must not be allowed to cancel them.
+#
+# Why the bar is this high, in the user's own words: "als de zonne energie te
+# weinig is om de piek te dekken of de batterij is niet groot genoeg dan is dat
+# zo, dan hebben we in ieder geval alles geprobeerd". Doubt resolves towards
+# holding, never towards releasing: energy kept back that turns out not to have
+# been needed costs an opportunity, while a peak left to the grid costs the
+# price the whole reserve exists to avoid. There is no requirement that a peak
+# always be covered -- only that the code tried -- so nothing here compensates
+# by planning to buy the peak back at peak price. All or nothing is deliberate
+# for the same reason: a half-credit would release a peak on a forecast that is
+# exactly as unproven as the one it was halved for.
+SOLAR_CREDIT_MIN_FUTURE_COVERAGE = 0.80
 
 # Pre-discharge deliberately empties the battery before a curtailment window,
 # and peak shaving deliberately spends it on a spike. Holding energy back
@@ -419,6 +451,11 @@ class DischargeReserveManager:
         # The forecast is AC-side and unbounded; the battery takes it at a
         # finite charge power and loses part of it on the way in, and the room
         # it is measured against downstream is battery-side energy.
+        # An unproven forecast pays nothing at all: the claim order, dearest
+        # first, then decides how much of the battery is held back, and every
+        # claiming peak stays covered.
+        if not self._solar_credit_is_reliable(now):
+            return net_demand_by_slot(consumption, solar), {}
         charge_power_w = max(
             0.0, float(getattr(self._controller, "max_charge_capacity", 0.0) or 0.0)
         )
@@ -441,6 +478,90 @@ class DischargeReserveManager:
                     absorbed_kwh = 0.0
             surplus[slot] = SURPLUS_CREDIT_FACTOR * absorbed_kwh * CHARGE_EFFICIENCY
         return net_demand_by_slot(consumption, solar), surplus
+
+    def _solar_credit_is_reliable(self, now: datetime) -> bool:
+        """True when the learned solar profile may cancel part of a claim.
+
+        Deliberately one question with one answer, not a score: is the profile
+        mature *and* does it cover the daylight that is still ahead? Everything
+        else keeps today's behaviour. Without a profile, with the profile
+        switched off, or with no daylight window to measure, the credit works
+        exactly as it always did -- no verdict is not a bad verdict.
+
+        Fails open on any error too. The reserve exists to protect a peak, and
+        a reader that cannot answer must not be the reason a peak goes
+        unprotected.
+
+        Note what "no credit at all" costs and why that is accepted: the credit
+        is also the only thing that counts sun landing *between* two peaks, so
+        switching it off keeps both peaks fully reserved. That is the intended
+        trade. Doubt holds; the user would rather keep energy that turns out not
+        to have been needed than release a peak on a forecast that cannot say
+        whether the sun will cover it.
+        """
+        tracker = getattr(self._controller, "_consumption_tracker", None)
+        profile = getattr(tracker, "solar_profile", None) if tracker is not None else None
+        if profile is None:
+            return True
+        if (
+            normalize_solar_profile_mode(getattr(self._controller, "solar_profile_mode", None))
+            == "off"
+        ):
+            return True
+        try:
+            future_start, future_end = self._daylight_progress(now, tracker)
+            if future_start is None or future_end is None:
+                # No daylight window to measure coverage against, so there is
+                # nothing that can prove the forecast unreliable. Spending the
+                # credit would release peaks on a guess, but withholding it
+                # would hold energy on the same guess -- and doubt is supposed
+                # to favour holding for exactly as long as the doubt is real.
+                # Here it is not: the profile is simply not being asked.
+                return True
+            snapshot = profile.get_snapshot(
+                target_date=now.date(),
+                future_progress_start=future_start,
+                future_progress_end=future_end,
+            )
+            return bool(
+                snapshot.mature
+                and snapshot.future_coverage_ratio >= SOLAR_CREDIT_MIN_FUTURE_COVERAGE
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Discharge reserve: solar profile unreadable: %s", err)
+            return True
+
+    def _daylight_progress(
+        self, now: datetime, tracker
+    ) -> tuple[float | None, float | None]:
+        """``now`` and the horizon as fractions of today's daylight window.
+
+        Reuses the pricing manager's own window so the reserve measures the
+        same sunrise-to-sunset span the rest of the integration does. Returns
+        ``(None, None)`` when that window cannot be resolved, which the caller
+        reads as "nothing to judge".
+        """
+        pricing = getattr(self._controller, "_pricing_mgr", None)
+        resolver = getattr(pricing, "_solar_timeline_window", None)
+        if not callable(resolver):
+            return None, None
+        try:
+            start, end = resolver(now, tracker)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Discharge reserve: solar window unavailable: %s", err)
+            return None, None
+        if start is None or end is None:
+            return None, None
+        seconds = (end - start).total_seconds()
+        if seconds <= 0:
+            return None, None
+        future_start = max(0.0, min(1.0, (now - start).total_seconds() / seconds))
+        horizon_end = self._horizon_end(now)
+        future_end = max(
+            future_start,
+            min(1.0, (horizon_end - start).total_seconds() / seconds),
+        )
+        return future_start, future_end
 
     def _hold_plan_state(self, now: datetime) -> tuple[set, set] | None:
         """Return ``(slots the hold planned, slots it selected)``, or None.
