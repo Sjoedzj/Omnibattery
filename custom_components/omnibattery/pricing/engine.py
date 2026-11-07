@@ -246,6 +246,11 @@ class PricingManager:
         self._controller = controller
         self._future_price_slots_cache_key: tuple[Any, ...] | None = None
         self._future_price_slots_cache: tuple[PriceSlot, ...] = ()
+        # The whole-day variant (``include_past=True``) is read by the daily
+        # timeline panel once per quarter, so it gets its own cache entry
+        # instead of evicting the future-only cache every control cycle.
+        self._day_price_slots_cache_key: tuple[Any, ...] | None = None
+        self._day_price_slots_cache: tuple[PriceSlot, ...] = ()
         # Why the last sensor parse failed. Only the import caller promotes it
         # to ``controller._price_data_status``; the export curve must never
         # raise the import-price repair issue.
@@ -1024,12 +1029,18 @@ class PricingManager:
             },
         )
 
-    def get_future_price_slots(self, horizon_end=None) -> list:
-        """Public accessor for parsed future PriceSlots (today, future-only).
+    def get_future_price_slots(self, horizon_end=None, *, include_past: bool = False) -> list:
+        """Public accessor for parsed PriceSlots (today, future-only by default).
 
         Thin, quiet wrapper around :meth:`_parse_price_data` for other managers
         (e.g. the charge-delay price-aware release) that poll prices every control
         cycle and must not spam the log. Logging is demoted to debug level here.
+
+        ``include_past=True`` additionally returns the slots of today that already
+        ended. The default stays future-only because every price-aware decision
+        must plan on the remaining day; the daily timeline needs the elapsed
+        quarters to show whether the battery charged in the cheap hours and
+        discharged on the peaks.
         """
         now = self._now()
         state = None
@@ -1054,11 +1065,31 @@ class PricingManager:
             getattr(self._controller, "_nordpool_prices_fetched_at", None),
             tuple(sorted(getattr(self._controller, "_energyzero_prices_fetched_at", {}).items())),
         )
-        if cache_key == self._future_price_slots_cache_key:
-            return list(self._future_price_slots_cache)
-        slots = self._parse_price_data(horizon_end=horizon_end, quiet=True)
-        self._future_price_slots_cache_key = cache_key
-        self._future_price_slots_cache = tuple(slots)
+        if include_past:
+            cached_key, cached_slots = (
+                self._day_price_slots_cache_key,
+                self._day_price_slots_cache,
+            )
+        else:
+            cached_key, cached_slots = (
+                self._future_price_slots_cache_key,
+                self._future_price_slots_cache,
+            )
+        if cache_key == cached_key:
+            return list(cached_slots)
+        # Only forward ``include_past`` when it is asked for: a pricing stand-in
+        # (and the tests that patch this seam) may not accept the keyword, and
+        # the future-only call must keep its exact historical signature.
+        if include_past:
+            slots = self._parse_price_data(
+                horizon_end=horizon_end, quiet=True, include_past=True
+            )
+            self._day_price_slots_cache_key = cache_key
+            self._day_price_slots_cache = tuple(slots)
+        else:
+            slots = self._parse_price_data(horizon_end=horizon_end, quiet=True)
+            self._future_price_slots_cache_key = cache_key
+            self._future_price_slots_cache = tuple(slots)
         return list(slots)
 
     def get_future_export_price_slots(
@@ -1216,25 +1247,48 @@ class PricingManager:
         return raw_slots
 
     @staticmethod
-    def _filter_future_slots(raw_slots: list, horizon_end=None) -> list:
+    def _filter_future_slots(
+        raw_slots: list, horizon_end=None, *, include_past: bool = False
+    ) -> list:
         """Keep slots that end in the future and start within the horizon.
 
         Default (``horizon_end=None``) keeps today-only semantics so mid-day
         restarts do not pull in tomorrow — callers that need cross-midnight
         slots pass an explicit horizon.
+
+        ``include_past=True`` lowers the start bound to local midnight instead of
+        "now", so the elapsed quarters of today are returned as well. The upper
+        bound is unchanged: it stays the caller's horizon (today by default), so
+        tomorrow never leaks in. Only the daily price strip (charge in the cheap
+        quarters, discharge on the peaks) needs that half of the day; every
+        price-aware decision keeps the future-only window.
         """
         now = datetime.now()
         end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
         effective_horizon = horizon_end if horizon_end is not None else end_of_day
-        return [s for s in raw_slots if s.end > now and s.start <= effective_horizon]
+        lower_bound = (
+            now.replace(hour=0, minute=0, second=0, microsecond=0)
+            if include_past
+            else now
+        )
+        return [
+            s for s in raw_slots if s.end > lower_bound and s.start <= effective_horizon
+        ]
 
-    def _parse_price_data(self, *, horizon_end=None, quiet=False) -> list:
-        """Read price sensor and return list[PriceSlot] for remaining slots up to horizon_end.
+    def _parse_price_data(
+        self, *, horizon_end=None, quiet=False, include_past=False
+    ) -> list:
+        """Read price sensor and return list[PriceSlot] for the slots up to horizon_end.
 
         Dispatches to the correct parser based on price_integration_type.
         When horizon_end is None, defaults to end of current day (today 23:59:59).
         Returns empty list on error. When quiet=True, status logging is demoted to
         debug so high-frequency callers do not spam the log.
+
+        ``include_past=True`` returns today's elapsed slots too (see
+        :meth:`_filter_future_slots`). The published ``_price_data_status`` keeps
+        describing the future-only window in both modes, so a read that also
+        wants history can never mask the "no future slots" repair condition.
         """
         _warn = _LOGGER.debug if quiet else _LOGGER.warning
         official_nordpool = self._official_nordpool_source()
@@ -1277,17 +1331,24 @@ class PricingManager:
                 return []
 
         # Filter to remaining slots within the requested horizon.
-        filtered = self._filter_future_slots(raw_slots, horizon_end)
+        filtered = self._filter_future_slots(
+            raw_slots, horizon_end, include_past=include_past
+        )
         # Slots that parse but all lie in the past leave price-aware charging just as
         # dead as a parse failure (e.g. a template sensor frozen on yesterday's
         # entries), so this is a distinct status rather than "ok (0 slots)" — the
         # latter reads as healthy to the health check. In normal operation the
         # horizon only empties in the last minutes before midnight, far short of the
         # sustained window that raises a repair.
-        if not filtered:
+        future = (
+            self._filter_future_slots(raw_slots, horizon_end)
+            if include_past
+            else filtered
+        )
+        if not future:
             self._controller._price_data_status = "no_future_slots"
         else:
-            self._controller._price_data_status = f"ok ({len(filtered)} slots)"
+            self._controller._price_data_status = f"ok ({len(future)} slots)"
         (_LOGGER.debug if quiet else _LOGGER.info)(
             "Dynamic pricing: parsed %d slots (%d within horizon)", len(raw_slots), len(filtered)
         )

@@ -1667,6 +1667,135 @@ def _timeline_duration_series(value: object) -> list[dict[str, float]]:
     return result[:_DAILY_OPERATION_INTERVAL_COUNT]
 
 
+def _timeline_price_slots(controller: object) -> list[object]:
+    """Return the price slots of today, including the quarters already past.
+
+    ``get_future_price_slots`` is future-only. The daily chart must show whether
+    the battery charged in the cheap quarters and discharged on the peaks, which
+    is only possible when the elapsed half of the day is included, so the pricing
+    engine gained an ``include_past`` switch for this read. A pricing stand-in
+    without that parameter still gets its future-only list instead of no curve.
+    """
+    pricing = _timeline_read(controller, "pricing", _TIMELINE_MISSING)
+    if pricing is _TIMELINE_MISSING or pricing is None:
+        return []
+    getter = _timeline_read(pricing, "get_future_price_slots", _TIMELINE_MISSING)
+    if getter is _TIMELINE_MISSING or not callable(getter):
+        return []
+    try:
+        slots = getter(include_past=True)
+    except TypeError:
+        # A pricing stand-in without the include_past parameter: keep the future
+        # half of the curve rather than no curve at all.
+        try:
+            slots = getter()
+        except Exception:  # noqa: BLE001 - an optional price read is best-effort
+            _LOGGER.debug("Price slots are unavailable for the daily chart", exc_info=True)
+            return []
+    except Exception:  # noqa: BLE001 - an optional price read is best-effort
+        _LOGGER.debug("Price slots are unavailable for the daily chart", exc_info=True)
+        return []
+    if slots is None:
+        return []
+    try:
+        return list(slots)
+    except TypeError:
+        return []
+
+
+def _timeline_price_unit(controller: object) -> str | None:
+    """Return the price unit label (``€/kWh``) so the panel can show it."""
+    pricing = _timeline_read(controller, "pricing", _TIMELINE_MISSING)
+    if pricing is _TIMELINE_MISSING or pricing is None:
+        return None
+    getter = _timeline_read(pricing, "_get_price_unit", _TIMELINE_MISSING)
+    if getter is _TIMELINE_MISSING or not callable(getter):
+        return None
+    try:
+        unit = getter()
+    except Exception:  # noqa: BLE001 - an optional price unit is best-effort
+        return None
+    text = _timeline_scalar(unit, 16)
+    return text if isinstance(text, str) and text else None
+
+
+def _timeline_local_midnight(day: date) -> datetime:
+    """Return the naive local midnight of ``day`` (prices are naive local too)."""
+    return datetime.combine(day, datetime.min.time())
+
+
+def _timeline_price_series(
+    controller: object,
+    local_date: object,
+) -> list[object]:
+    """Average today's price curve onto the 96 quarter cells of the day chart.
+
+    Prices and kWh have nothing in common, so the panel draws this curve in its
+    own strip with its own axis. A quarter without an overlapping price stays
+    ``None`` — a missing price is not free electricity — and never becomes ``0``.
+    """
+    slots = _timeline_price_slots(controller)
+    day = None
+    text = _timeline_date_string(local_date)
+    if text:
+        try:
+            day = date.fromisoformat(text[:10])
+        except ValueError:
+            day = None
+    if day is None:
+        day = dt_util.now().date()
+    if not slots:
+        return [None] * _DAILY_OPERATION_INTERVAL_COUNT
+
+    midnight = _timeline_local_midnight(day)
+    buckets: list[list[tuple[float, float]]] = [
+        [] for _ in range(_DAILY_OPERATION_INTERVAL_COUNT)
+    ]
+    for slot in slots:
+        start = _timeline_read(slot, "start", None)
+        end = _timeline_read(slot, "end", None)
+        price = _timeline_number(_timeline_read(slot, "price", None), 6)
+        if not isinstance(start, datetime) or not isinstance(end, datetime):
+            continue
+        if price is None or end <= start:
+            continue
+        # Every provider parser normalises to naive local wall clock; a slot that
+        # still carries a zone is converted so the overlap maths stays wall-clock.
+        try:
+            if start.tzinfo is not None:
+                start = dt_util.as_local(start).replace(tzinfo=None)
+            if end.tzinfo is not None:
+                end = dt_util.as_local(end).replace(tzinfo=None)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        first_minute = (start - midnight).total_seconds() / 60.0
+        last_minute = (end - midnight).total_seconds() / 60.0
+        first = max(0, int(first_minute // _DAILY_OPERATION_INTERVAL_MINUTES))
+        last = min(
+            _DAILY_OPERATION_INTERVAL_COUNT - 1,
+            int(math.ceil(last_minute / _DAILY_OPERATION_INTERVAL_MINUTES)) - 1,
+        )
+        for index in range(first, last + 1):
+            cell_start = index * _DAILY_OPERATION_INTERVAL_MINUTES
+            cell_end = cell_start + _DAILY_OPERATION_INTERVAL_MINUTES
+            # Weight by overlap so an hourly price slot fills its four quarters
+            # and a quarter that a slot only clips still gets that slot's price.
+            overlap = min(last_minute, cell_end) - max(first_minute, cell_start)
+            if overlap > 0:
+                buckets[index].append((price, overlap))
+
+    series: list[object] = []
+    for bucket in buckets:
+        weight = sum(overlap for _, overlap in bucket)
+        if weight <= 0:
+            series.append(None)
+            continue
+        series.append(
+            round(sum(price * overlap for price, overlap in bucket) / weight, 6)
+        )
+    return series
+
+
 def _timeline_sources(snapshot: object, metadata: object) -> dict[str, object]:
     """Return the bounded source and maturity metadata used by the panel."""
     source_section = _timeline_find(snapshot, ("sources", "source"))
@@ -2000,7 +2129,14 @@ def _daily_operation_timeline_attributes(controller: object) -> dict[str, object
         ),
         "last_error": last_error,
         "freshness": freshness,
+        # Unit of the price curve inside ``series`` ("€/kWh"); a scalar because
+        # the panel needs one label for the strip's axis, not one per quarter.
+        "price_unit": _timeline_price_unit(controller),
         "series": {
+            # The price curve of the same quarters, so the panel can show
+            # charge-in-the-dal / discharge-on-the-peak next to the energy
+            # chart. ``None`` marks a quarter without a price (never 0).
+            "price_kwh": _timeline_price_series(controller, local_date),
             "solar_actual_kwh": _timeline_array(
                 _timeline_find(source, ("solar_actual_kwh", "solar_actual"), series),
                 _timeline_energy,
@@ -2251,6 +2387,7 @@ class DailyOperationTimelineSensor(SensorEntity):
     _unrecorded_attributes = frozenset(
         {
             "series",
+            "price_kwh",
             "operations",
             "dst_skipped",
             "dst_repeated",
