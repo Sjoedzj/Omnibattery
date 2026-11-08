@@ -625,6 +625,10 @@ class ProjectionIntervalInput:
     coverage_seconds: float | None = None
     projected: bool | None = None
     duration_seconds: float | None = None
+    # Import price of this interval.  ``None`` means "no price known", which
+    # keeps the discharge order chronological: a projection may never invent a
+    # price just to be able to sort on it.
+    price_kwh: float | None = None
 
 
 @dataclass(frozen=True)
@@ -806,6 +810,7 @@ def _coerce_interval(value: Any, index: int) -> ProjectionIntervalInput:
             value.get("coverage_seconds"),
             value.get("projected"),
             value.get("duration_seconds", value.get("duration_s")),
+            value.get("price_kwh", value.get("price")),
         )
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         if len(value) < 4:
@@ -830,6 +835,7 @@ def _coerce_interval(value: Any, index: int) -> ProjectionIntervalInput:
         getattr(value, "coverage_seconds", None),
         getattr(value, "projected", None),
         getattr(value, "duration_seconds", None),
+        getattr(value, "price_kwh", getattr(value, "price", None)),
     )
 
 
@@ -1025,21 +1031,126 @@ def _battery_limits(
     return stored, minimum, maximum, charge_power, discharge_power, capacity
 
 
+def _interval_prices(
+    interval_list: Sequence[ProjectionIntervalInput],
+) -> list[float | None]:
+    """Return each interval's import price, with ``None`` for "unknown"."""
+    prices: list[float | None] = []
+    for interval in interval_list:
+        parsed = _finite(interval.price_kwh, math.nan)
+        prices.append(parsed if math.isfinite(parsed) else None)
+    return prices
+
+
+def _price_order_key(price: float | None) -> tuple[float, float]:
+    """Sort dearest first; an interval without a price goes after priced ones."""
+    if price is None:
+        return (1.0, 0.0)
+    return (0.0, -price)
+
+
+def _price_priority_plan(
+    interval_list: Sequence[ProjectionIntervalInput],
+    battery_list: Sequence[BatteryProjectionInput],
+    baseline: BatteryProjectionResult,
+    prices: Sequence[float | None],
+    system_discharge_power_w: float | None,
+    discharge_efficiency: float,
+) -> tuple[list[float], list[float], list[int]] | None:
+    """Split the baseline discharge energy over the quarters by price.
+
+    Returns ``(targets, capacities, order)`` or ``None`` when the chronological
+    result already is the price result: no discharge energy, no prices, or
+    enough energy to serve every deficit quarter.  ``targets`` always sums to
+    exactly the energy the baseline pass discharged, so only *where* it lands
+    changes.
+    """
+    total = sum(flow.battery_to_home_kwh for flow in baseline.intervals)
+    if total <= _EPSILON:
+        return None
+    limits: dict[str, tuple[BatteryProjectionInput, tuple[float, ...]]] = {}
+    for battery in battery_list:
+        values = _battery_limits(battery)
+        if values is not None:
+            limits[str(battery.key)] = (battery, values)
+    if not limits:
+        return None
+
+    capacities: list[float] = []
+    for index, interval in enumerate(interval_list):
+        duration_hours = max(
+            0.0,
+            (
+                _non_negative(interval.duration_seconds)
+                if interval.duration_seconds is not None
+                else _duration_seconds(interval.start, interval.end)
+            ),
+        ) / 3600.0
+        consumption = _non_negative(interval.consumption_kwh)
+        solar = _non_negative(interval.solar_kwh)
+        deficit = max(0.0, consumption - min(solar, consumption))
+        capacity = 0.0
+        if deficit > _EPSILON and duration_hours > _EPSILON:
+            # A battery that charges in this quarter may not discharge in it,
+            # exactly as in the chronological pass.
+            charged_keys = {
+                key
+                for key, flows in baseline.battery_flows.items()
+                if index < len(flows)
+                and (
+                    flows[index].solar_to_battery_kwh > _EPSILON
+                    or flows[index].grid_to_battery_kwh > _EPSILON
+                )
+            }
+            power_kwh = 0.0
+            for key, (battery, values) in limits.items():
+                if key in charged_keys or not battery.can_discharge:
+                    continue
+                efficiency = _effective_efficiency(
+                    battery.discharge_efficiency, discharge_efficiency
+                )
+                if efficiency <= _EPSILON:
+                    continue
+                power_kwh += values[4] * duration_hours / 1000.0
+            if system_discharge_power_w is not None:
+                power_kwh = min(
+                    power_kwh,
+                    _non_negative(system_discharge_power_w) * duration_hours / 1000.0,
+                )
+            capacity = min(deficit, power_kwh)
+        capacities.append(capacity)
+
+    if sum(capacities) <= total + _EPSILON:
+        # The stored energy covers every deficit quarter, so the chronological
+        # pass already serves the dearest ones too: nothing may change.
+        return None
+
+    order = sorted(
+        range(len(interval_list)),
+        key=lambda index: (
+            _price_order_key(prices[index]),
+            _timestamp(interval_list[index].start),
+        ),
+    )
+    targets = [0.0] * len(interval_list)
+    budget = total
+    for index in order:
+        if budget <= _EPSILON:
+            break
+        take = min(capacities[index], budget)
+        if take <= _EPSILON:
+            continue
+        targets[index] = take
+        budget -= take
+    if budget > _EPSILON:
+        return None
+    return targets, capacities, order
+
+
 def simulate_battery_projection(
     intervals: Iterable[Any],
     batteries: Sequence[BatteryProjectionInput],
-    *,
-    allocations: Any = None,
-    grid_charge_kwh: Any = None,
-    allocation_energy_kind: str = "stored",
-    charge_efficiency: float = CHARGE_EFFICIENCY,
-    discharge_efficiency: float = 1.0,
-    context_masks: Any = None,
-    grid_charge_decisions: Any = None,
-    charge_availability: Any = None,
-    charge_ceiling_pct: Any = None,
-    system_charge_power_w: float | None = None,
-    system_discharge_power_w: float | None = None,
+    **kwargs: Any,
 ) -> BatteryProjectionResult:
     """Project aggregate and per-battery flows without mutating any input.
 
@@ -1060,6 +1171,118 @@ def simulate_battery_projection(
     latch does not apply while raised.  System-wide charge/discharge
     limits cap the aggregate AC-side flow in each interval in addition to every
     battery's own power limit.
+
+    When an interval carries ``price_kwh`` and the stored energy cannot cover
+    all deficit quarters, the same amount of discharge energy the chronological
+    pass dispatched is handed to the dearest quarters first.  Demand, power,
+    SOC and charge limits are untouched, so the daily discharge total is
+    identical; only the quarters it lands on differ.  Without prices, with a
+    single price, or when the energy covers everything, the chronological
+    result is returned unchanged.
+    """
+    price_priority = bool(kwargs.pop("discharge_price_priority", True))
+    interval_list = [
+        _coerce_interval(value, index) for index, value in enumerate(intervals)
+    ]
+    battery_list = list(batteries or ())
+    baseline = _run_battery_projection(interval_list, battery_list, **kwargs)
+    if not price_priority:
+        return baseline
+    prices = _interval_prices(interval_list)
+    priced = [price for price in prices if price is not None]
+    if len(priced) < 2 or len(set(priced)) < 2:
+        return baseline
+    plan = _price_priority_plan(
+        interval_list,
+        battery_list,
+        baseline,
+        prices,
+        kwargs.get("system_discharge_power_w"),
+        kwargs.get("discharge_efficiency", 1.0),
+    )
+    if plan is None:
+        return baseline
+    targets, capacities, order = plan
+    # Replay the baseline charge flows so the charge side cannot move: only the
+    # discharge order is under discussion here.  Clamping at max SOC is still
+    # applied by the pass itself.
+    pinned = {
+        index: {
+            key: (
+                flows[index].solar_to_battery_kwh,
+                flows[index].grid_to_battery_kwh,
+            )
+            for key, flows in baseline.battery_flows.items()
+            if index < len(flows)
+        }
+        for index in range(len(interval_list))
+    }
+    total = sum(flow.battery_to_home_kwh for flow in baseline.intervals)
+    tolerance = 1e-9 * max(1.0, abs(total))
+    stalled: set[int] = set()
+    pending: set[int] = set()
+    previous = [0.0] * len(interval_list)
+    for _ in range(8):
+        result = _run_battery_projection(
+            interval_list,
+            battery_list,
+            _pinned_charge=pinned,
+            _discharge_targets=targets,
+            **kwargs,
+        )
+        delivered = [flow.battery_to_home_kwh for flow in result.intervals]
+        if abs(sum(delivered) - total) <= tolerance:
+            return result
+        for index in pending:
+            if delivered[index] <= previous[index] + _EPSILON:
+                stalled.add(index)
+        previous = delivered
+        remaining = total - sum(delivered)
+        pending = set()
+        for index in order:
+            if remaining <= tolerance:
+                break
+            if index in stalled:
+                continue
+            room = capacities[index] - delivered[index]
+            if room <= _EPSILON:
+                continue
+            take = min(room, remaining)
+            targets[index] += take
+            remaining -= take
+            pending.add(index)
+        if not pending:
+            break
+    # Conservation wins over ordering: if the reordered pass cannot spend
+    # exactly the same energy (for example because a charge cannot be held at
+    # max SOC), keep the chronological result instead of inventing energy.
+    return baseline
+
+
+def _run_battery_projection(
+    intervals: Iterable[Any],
+    batteries: Sequence[BatteryProjectionInput],
+    *,
+    allocations: Any = None,
+    grid_charge_kwh: Any = None,
+    allocation_energy_kind: str = "stored",
+    charge_efficiency: float = CHARGE_EFFICIENCY,
+    discharge_efficiency: float = 1.0,
+    context_masks: Any = None,
+    grid_charge_decisions: Any = None,
+    charge_availability: Any = None,
+    charge_ceiling_pct: Any = None,
+    system_charge_power_w: float | None = None,
+    system_discharge_power_w: float | None = None,
+    _pinned_charge: Mapping[int, Mapping[str, tuple[float, float]]] | None = None,
+    _discharge_targets: Sequence[float] | None = None,
+) -> BatteryProjectionResult:
+    """Run one chronological pass over the intervals.
+
+    ``_pinned_charge`` and ``_discharge_targets`` are private inputs for the
+    price-ordered projection: the first replays the baseline charge flows, the
+    second caps how much a quarter may discharge.  Public callers never set
+    them, so a normal call still discharges every quarter in time order.
     """
     interval_list = [
         _coerce_interval(value, index) for index, value in enumerate(intervals)
@@ -1160,6 +1383,14 @@ def simulate_battery_projection(
             if system_discharge_power_w is not None
             else math.inf
         )
+        pinned_interval = (
+            None if _pinned_charge is None else _pinned_charge.get(index)
+        )
+        target_remaining = (
+            math.inf
+            if _discharge_targets is None
+            else max(0.0, _finite(_discharge_targets[index], 0.0))
+        )
 
         # Solar is consumed locally before it is offered to the batteries.
         for (
@@ -1191,6 +1422,54 @@ def simulate_battery_projection(
             discharge_eff = _effective_efficiency(
                 battery.discharge_efficiency, discharge_efficiency
             )
+            if pinned_interval is not None:
+                # Price-ordered replay: the charge side is frozen at the
+                # baseline flows, so only the discharge allocation can differ.
+                # Clamping keeps max SOC intact even though holding energy back
+                # in an earlier quarter may leave less room here.
+                solar_input = 0.0
+                grid_input = 0.0
+                if charge_eff > _EPSILON and duration_hours > _EPSILON:
+                    pinned_solar, pinned_grid = pinned_interval.get(
+                        key, (0.0, 0.0)
+                    )
+                    headroom_input = max(
+                        0.0, (interval_maximum - states[key]) / charge_eff
+                    )
+                    solar_input = min(
+                        max(0.0, _finite(pinned_solar, 0.0)), headroom_input
+                    )
+                    solar_surplus -= solar_input
+                    solar_charge_available -= solar_input
+                    system_charge_remaining = max(
+                        0.0, system_charge_remaining - solar_input
+                    )
+                    states[key] += solar_input * charge_eff
+                    solar_to_battery += solar_input
+                    stored_energy_charged += solar_input * charge_eff
+                    headroom_input = max(
+                        0.0, (interval_maximum - states[key]) / charge_eff
+                    )
+                    grid_input = min(
+                        max(0.0, _finite(pinned_grid, 0.0)), headroom_input
+                    )
+                    system_charge_remaining = max(
+                        0.0, system_charge_remaining - grid_input
+                    )
+                    states[key] += grid_input * charge_eff
+                    grid_to_battery += grid_input
+                    stored_energy_charged += grid_input * charge_eff
+                per_battery[key] = {
+                    "start_stored": start_stored,
+                    "solar_input": solar_input,
+                    "grid_input": grid_input,
+                    "charge_eff": charge_eff,
+                    "discharge_eff": discharge_eff,
+                    "minimum": minimum,
+                    "discharge_power": discharge_power,
+                    "discharge_output": 0.0,
+                }
+                continue
             if (
                 not can_charge
                 or charge_eff <= _EPSILON
@@ -1315,8 +1594,10 @@ def simulate_battery_projection(
                     power_cap,
                     available_output,
                     system_discharge_remaining,
+                    max(0.0, target_remaining),
                 )
             values["discharge_output"] = discharge_output
+            target_remaining = max(0.0, target_remaining - discharge_output)
             system_discharge_remaining = max(
                 0.0, system_discharge_remaining - discharge_output
             )
@@ -1547,6 +1828,10 @@ def project_charge_delay(
         discharge_efficiency=discharge_efficiency,
         system_charge_power_w=system_charge_power_w,
         system_discharge_power_w=system_discharge_power_w,
+        # This projection only estimates when a charge setpoint is reached.
+        # Price-ordered discharge is a display concern and must not move that
+        # milestone, so keep the chronological discharge trajectory here.
+        discharge_price_priority=False,
     )
     target_energy = {
         str(battery.key): _finite(battery.capacity_kwh)

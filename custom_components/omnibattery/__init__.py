@@ -2150,6 +2150,74 @@ class ChargeDischargeController:
         if plan is None:
             return None
 
+        plan_intervals = tuple(getattr(plan, "intervals", ()) or ())
+
+        def projection_prices(intervals: tuple[Any, ...]) -> tuple[float | None, ...]:
+            """Align the pricing curve with the plan intervals, one price each.
+
+            The projection hands scarce discharge energy to the dearest quarters
+            first, so it needs the import price of every quarter.  The plan
+            itself carries energy only; the same ``PricingManager`` that feeds
+            the price strip supplies the curve.  A planner without price data
+            (lightweight test doubles, a mode without a dynamic tariff) returns
+            no prices, which keeps the chronological discharge order.
+            """
+            getter = getattr(planner, "get_future_price_slots", None)
+            if not callable(getter):
+                return ()
+            try:
+                slots = getter(horizon_end=projection_horizon_end)
+            except TypeError:
+                try:
+                    slots = getter()
+                except Exception:  # noqa: BLE001 - price curve is optional
+                    return ()
+            except Exception:  # noqa: BLE001 - price curve is optional
+                return ()
+            parsed: list[tuple[datetime, datetime, float]] = []
+            for slot in slots or ():
+                start = getattr(slot, "start", None)
+                end = getattr(slot, "end", None)
+                if not isinstance(start, datetime) or not isinstance(end, datetime):
+                    continue
+                if end <= start:
+                    continue
+                price = self._daily_operation_float(
+                    getattr(slot, "price", None), None
+                )
+                if price is None:
+                    continue
+                parsed.append(
+                    (
+                        projection_datetime(start),
+                        projection_datetime(end),
+                        price,
+                    )
+                )
+            if not parsed:
+                return ()
+            prices: list[float | None] = []
+            for interval in intervals:
+                start = getattr(interval, "start", None)
+                end = getattr(interval, "end", None)
+                if not isinstance(start, datetime) or not isinstance(end, datetime):
+                    prices.append(None)
+                    continue
+                start = projection_datetime(start)
+                end = projection_datetime(end)
+                weight = 0.0
+                weighted = 0.0
+                for slot_start, slot_end, price in parsed:
+                    seconds = (
+                        min(end, slot_end) - max(start, slot_start)
+                    ).total_seconds()
+                    if seconds <= 0.0:
+                        continue
+                    weight += seconds
+                    weighted += price * seconds
+                prices.append(weighted / weight if weight > 0.0 else None)
+            return tuple(prices)
+
         allocations = list(getattr(plan, "allocations", ()) or ())
         if mode == "dynamic_pricing" and schedule is not None:
             # The selected schedule and its stored-energy targets are the
@@ -2266,7 +2334,15 @@ class ChargeDischargeController:
         return build_daily_operation_projection(
             DailyOperationProjectionRequest(
                 now=now,
-                plan_intervals=tuple(getattr(plan, "intervals", ()) or ()),
+                plan_intervals=plan_intervals,
+                # Only dynamic pricing ranks quarters by price.  Time Slot and
+                # profile modes plan on their own windows; handing them a price
+                # curve would reorder a schedule the user configured.
+                prices_kwh=(
+                    projection_prices(plan_intervals)
+                    if mode == "dynamic_pricing"
+                    else ()
+                ),
                 allocations=tuple(allocations),
                 battery_inputs=tuple(battery_inputs),
                 mode=mode,

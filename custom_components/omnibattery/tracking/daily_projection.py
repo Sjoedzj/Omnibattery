@@ -78,6 +78,10 @@ class DailyOperationProjectionRequest:
     battery_inputs: Sequence[BatteryProjectionInput]
     mode: str
     decision_data: Mapping[str, Any]
+    # Import price aligned with ``plan_intervals``.  Only used to hand scarce
+    # discharge energy to the dearest quarters first; an empty or short series
+    # simply keeps the chronological order.
+    prices_kwh: Sequence[float | None] = ()
     predictive_charging_enabled: bool = False
     has_selected_schedule: bool = False
     setpoint_enabled: bool = False
@@ -103,6 +107,7 @@ class DailyOperationProjectionRequest:
         object.__setattr__(self, "plan_intervals", tuple(self.plan_intervals))
         object.__setattr__(self, "allocations", tuple(self.allocations))
         object.__setattr__(self, "battery_inputs", tuple(self.battery_inputs))
+        object.__setattr__(self, "prices_kwh", tuple(self.prices_kwh))
         object.__setattr__(
             self,
             "decision_data",
@@ -130,8 +135,9 @@ def build_daily_operation_projection(
     if not plan_intervals:
         return None
 
-    remaining_intervals: list[tuple[Any, datetime, float]] = []
-    for interval in plan_intervals:
+    prices = tuple(request.prices_kwh)
+    remaining_intervals: list[tuple[Any, datetime, float, float | None]] = []
+    for plan_index, interval in enumerate(plan_intervals):
         start = getattr(interval, "start", None)
         end = getattr(interval, "end", None)
         if not isinstance(start, datetime) or not isinstance(end, datetime):
@@ -149,8 +155,9 @@ def build_daily_operation_projection(
         except (TypeError, ValueError):
             continue
         if remaining_ratio > 0.0:
+            price = prices[plan_index] if plan_index < len(prices) else None
             remaining_intervals.append(
-                (interval, remaining_start, min(1.0, remaining_ratio))
+                (interval, remaining_start, min(1.0, remaining_ratio), price)
             )
     if not remaining_intervals:
         return None
@@ -164,7 +171,7 @@ def build_daily_operation_projection(
         explicit_should_charge = request.decision_data["aggregate_should_charge"]
     context_masks: list[int] = []
     grid_decisions: list[str] = []
-    for interval, remaining_start, _remaining_ratio in remaining_intervals:
+    for interval, remaining_start, _remaining_ratio, _price in remaining_intervals:
         context = mode_context if request.predictive_charging_enabled else 0
         if (
             request.setpoint_enabled
@@ -204,8 +211,9 @@ def build_daily_operation_projection(
             context_mask=context_masks[index],
             grid_charge_decision=grid_decisions[index],
             projected=True,
+            price_kwh=price,
         )
-        for index, (interval, remaining_start, remaining_ratio) in enumerate(
+        for index, (interval, remaining_start, remaining_ratio, price) in enumerate(
             remaining_intervals
         )
     ]
@@ -217,7 +225,7 @@ def build_daily_operation_projection(
             _published_solar(interval),
             _published_consumption(interval),
         )
-        for interval, _remaining_start, _remaining_ratio in remaining_intervals
+        for interval, _remaining_start, _remaining_ratio, _price in remaining_intervals
     ]
     delay_projection = None
     delay_starts_at = (
