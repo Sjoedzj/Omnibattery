@@ -38,7 +38,7 @@ DAY = "2026-08-30"
 COMPONENT = Path(omnibattery.__file__).parent
 PANEL = COMPONENT / "frontend/marstek-panel.js"
 MANIFEST = COMPONENT / "manifest.json"
-EXPECTED_VERSION = "1.6.3b1"
+EXPECTED_VERSION = "1.6.4b1"
 
 
 def _at(hour: int, minute: int = 0) -> datetime:
