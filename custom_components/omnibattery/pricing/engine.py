@@ -64,6 +64,8 @@ from ..const import (
     DEFICIT_REEVAL_MAX_PER_DAY,
     DEADLINE_VALUE_REEVAL_KWH,
     DEADLINE_VALUE_REEVAL_COOLDOWN_MIN,
+    FLOOR_REEVAL_MIN_DROP_SOC,
+    FLOOR_REEVAL_TOLERANCE_SOC,
     T_START_FALLBACK_HOUR,
     FLOOR_HYSTERESIS_PCT,
     CHARGE_EFFICIENCY,
@@ -4828,6 +4830,14 @@ class PricingManager:
         pass. Directional (only drops trigger); debounced by resetting
         ``_dp_last_eval_soc`` on each re-eval, so it re-arms only after another
         drop. ``None`` reference (before the 00:05 eval) never triggers.
+
+        The threshold is a step in *SOC points*, but what limits a plan is the
+        free *room in kWh*: 5 points is 0.512 kWh on a 10.24 kWh fleet. A
+        battery that stops at its floor before the next step is taken never
+        re-plans with the last of that room, so the plan stays sized on the room
+        that existed one step higher. The floor boundary below takes that last
+        step — and only that step, because every rebuild refreshes the
+        reference, so a second firing needs another point of drop.
         """
         ref = self._controller._dp_last_eval_soc
         if ref is None:
@@ -4846,7 +4856,46 @@ class PricingManager:
             and getattr(schedule, "chronological_planning_active", False)
             else SOC_REEVALUATION_THRESHOLD
         )
-        return (ref - current) >= threshold
+        drop = ref - current
+        if drop >= threshold:
+            return True
+        floor = self._dp_discharge_floor_soc(coords)
+        if floor is None:
+            return False
+        return (
+            current <= floor + FLOOR_REEVAL_TOLERANCE_SOC
+            and drop >= FLOOR_REEVAL_MIN_DROP_SOC
+        )
+
+    def _dp_discharge_floor_soc(self, coords) -> float | None:
+        """Average SOC the batteries cannot go below, or ``None`` when unknown.
+
+        ``None`` keeps the floor rule out of the way of a callback that does not
+        expose a floor at all (a bare coordinator stand-in, or a controller
+        without the planning hook): the trigger then behaves exactly as before
+        and only the SOC-point threshold decides.
+        """
+        planning_floor = getattr(self._controller, "_planning_floor_soc", None)
+        floors: list[float] = []
+        for coordinator in coords:
+            value: float | None = None
+            if callable(planning_floor):
+                try:
+                    value = float(planning_floor(coordinator))
+                except (AttributeError, TypeError, ValueError):
+                    value = None
+            if value is None:
+                raw = getattr(coordinator, "min_soc", None)
+                if raw is None:
+                    return None
+                try:
+                    value = float(raw)
+                except (TypeError, ValueError):
+                    return None
+            floors.append(value)
+        if not floors:
+            return None
+        return sum(floors) / len(floors)
 
     def _is_excluded_demand_reeval(self, now: datetime) -> bool:
         """Return True when an excluded device's claim on remaining solar moved.

@@ -370,6 +370,83 @@ def test_soc_drop_reeval_false_when_no_coordinator_data():
 
 
 # ----------------------------------------------------------------------
+# _is_dp_soc_drop_reeval at the discharge floor (the last step, 1.6.0b13)
+#
+# The threshold is a step in SOC points, but what limits a plan is the free
+# room in kWh: 5 points of a 10.24 kWh fleet is 0.512 kWh. A battery that
+# stops at its floor before the next step is taken never re-plans with the
+# last of that room, so the night was sized on the room that existed one step
+# higher (a plan made at 16.5 % sized 8.55 kWh while 9.01 kWh was free). The
+# floor boundary takes that step, and only that step.
+# ----------------------------------------------------------------------
+
+def _floor_coord(soc, min_soc):
+    """Coordinator stand-in that also exposes the discharge floor."""
+    return SimpleNamespace(data={"battery_soc": soc}, min_soc=min_soc)
+
+
+def test_soc_drop_reeval_fires_on_the_floor_after_the_last_full_step():
+    # Reported case: planned at 16.5 %, stopped at the 12 % floor. 4.5 points
+    # is under the 5-point step, so without the floor rule this never fires.
+    ctrl = _controller(_dp_last_eval_soc=16.5, coordinators=[_floor_coord(12.0, 12)])
+    assert _mgr(ctrl)._is_dp_soc_drop_reeval() is True
+
+
+def test_soc_drop_reeval_fires_while_the_battery_settles_onto_the_floor():
+    # Within the tolerance band and 2.4 points of drop: still the last step.
+    ctrl = _controller(_dp_last_eval_soc=14.8, coordinators=[_floor_coord(12.4, 12)])
+    assert _mgr(ctrl)._is_dp_soc_drop_reeval() is True
+
+
+def test_soc_drop_reeval_does_not_flap_on_a_battery_resting_at_the_floor():
+    # Every rebuild refreshes the reference, so a resting battery is quiet:
+    # the second firing needs another whole point of drop.
+    resting = _mgr(
+        _controller(_dp_last_eval_soc=12.0, coordinators=[_floor_coord(12.0, 12)])
+    )
+    assert resting._is_dp_soc_drop_reeval() is False
+    just_planned = _mgr(
+        _controller(_dp_last_eval_soc=12.4, coordinators=[_floor_coord(12.0, 12)])
+    )
+    assert just_planned._is_dp_soc_drop_reeval() is False
+
+
+def test_soc_drop_reeval_quiet_between_the_floor_rule_and_the_threshold():
+    # 3 points of drop, far above the floor: neither rule applies.
+    ctrl = _controller(_dp_last_eval_soc=40.0, coordinators=[_floor_coord(37.0, 12)])
+    assert _mgr(ctrl)._is_dp_soc_drop_reeval() is False
+
+
+def test_soc_drop_reeval_uses_the_planning_floor_when_protection_raises_it():
+    # Capacity protection parks the battery at 30 %, so that is the floor the
+    # last step has to reach - not min_soc.
+    ctrl = _controller(
+        _dp_last_eval_soc=33.0,
+        coordinators=[_floor_coord(30.2, 12)],
+        _planning_floor_soc=lambda _coordinator: 30.0,
+    )
+    assert _mgr(ctrl)._is_dp_soc_drop_reeval() is True
+
+
+def test_soc_drop_reeval_ignores_the_floor_rule_when_no_floor_is_known():
+    # A coordinator without a floor leaves the trigger exactly as it was.
+    ctrl = _controller(_dp_last_eval_soc=16.5, coordinators=[_coord(12.0)])
+    assert _mgr(ctrl)._is_dp_soc_drop_reeval() is False
+
+
+def test_soc_drop_reeval_keeps_the_five_point_rule_with_chronological_planning():
+    # The floor rule adds a case; it never replaces the step that already fired.
+    ctrl = _controller(
+        _dp_last_eval_soc=20.0,
+        coordinators=[_floor_coord(14.0, 12)],
+        _dynamic_pricing_schedule=SimpleNamespace(
+            selected_slots=[], chronological_planning_active=True
+        ),
+    )
+    assert _mgr(ctrl)._is_dp_soc_drop_reeval() is True
+
+
+# ----------------------------------------------------------------------
 # _apply_excluded_demand_claim (today-only solar reservation, #341)
 # ----------------------------------------------------------------------
 
