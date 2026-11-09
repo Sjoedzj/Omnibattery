@@ -3,13 +3,18 @@
 The module deliberately has no Home Assistant dependencies.  Energies are
 expressed as kWh stored in the batteries; slot input power is derated by the
 charge efficiency when its usable capacity is calculated.
+
+The planner also records *why* every price slot did or did not receive energy
+(:data:`ChronologicalPlan.candidate_trace`).  That trace is measurement only:
+it reuses the planner's own ceiling, room and clipping values and never feeds
+back into the allocation.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import math
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ..const import CHARGE_EFFICIENCY
 from . import PriceSlot
@@ -18,6 +23,15 @@ ENERGY_TOLERANCE_KWH = 0.05
 _EPSILON = 1e-9
 # value_cap of a deadline past the last published price.
 _UNPRICED = -math.inf
+# Slots this far above their ceiling can never be ordinary candidates; they are
+# only reachable through the guaranteed-floor premium budget (issue #724).
+_CANDIDATE_TRACE_DECIMALS = 6
+# The published trace is bounded: diagnostics only ever shows the 96 quarters of
+# a day, so an unusual provider feeding thousands of slots must not be measured.
+_CANDIDATE_TRACE_MAX_SLOTS = 200
+# Escape hatch used by the regression test that proves the trace is pure: with
+# tracing off, ``allocate_price_slots`` must return an identical plan.
+_CANDIDATE_TRACE_ENABLED = True
 
 
 @dataclass(frozen=True)
@@ -124,6 +138,162 @@ class ChronologicalPlan:
     # Cheapest slot the price limits rejected, as (start, price, ceiling), so a
     # ``price_threshold`` plan shows by how much it missed.
     cheapest_rejected: tuple[datetime, float, float | None] | None = None
+    # Measurement only: one record per price slot explaining the allocation
+    # decision (see :func:`build_candidate_trace`).  It never feeds back into
+    # the plan, so a plan built without a trace is byte-for-byte identical.
+    candidate_trace: Mapping[str, Any] | None = None
+
+    def __eq__(self, other: object) -> bool:
+        """Compare behavioural plan fields, ignoring measurement-only fields.
+
+        ``candidate_trace`` and ``reason`` describe a plan, they do not define
+        it: two plans with identical intervals, deadlines, allocations and
+        energy figures are the same plan even when one of them was recorded
+        with per-slot measurement switched off.
+        """
+        if not isinstance(other, ChronologicalPlan):
+            return NotImplemented
+        return all(
+            getattr(self, name) == getattr(other, name)
+            for name in (
+                "intervals",
+                "deadlines",
+                "allocations",
+                "total_required_kwh",
+                "deadline_required_kwh",
+                "flexible_required_kwh",
+                "allocated_kwh",
+                "deadline_shortfall_kwh",
+                "total_shortfall_kwh",
+                "earliest_depletion_at",
+                "minimum_projected_energy_kwh",
+                "reason",
+            )
+        )
+
+    def __hash__(self) -> int:
+        return id(self)
+
+
+def candidate_trace_ceiling(ceiling: float | None) -> float | None:
+    """Return the publishable applied ceiling, or ``None`` for "no ceiling"."""
+    if ceiling is None:
+        return None
+    try:
+        parsed = float(ceiling)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return round(parsed, _CANDIDATE_TRACE_DECIMALS)
+
+
+def _candidate_trace_number(value: float) -> float | None:
+    """Return a finite rounded number, or ``None`` when not publishable."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return round(parsed, _CANDIDATE_TRACE_DECIMALS)
+
+
+def build_candidate_trace(
+    *,
+    price_slots: Iterable[PriceSlot],
+    candidates: Sequence[PriceSlot],
+    premium_candidates: Sequence[PriceSlot],
+    now: datetime,
+    horizon_end: datetime,
+    ceiling_of: Callable[[PriceSlot], float | None],
+    has_ceiling: bool,
+    allocations: Mapping[PriceSlot, float],
+    decision: Mapping[PriceSlot, str],
+    max_usable: Mapping[PriceSlot, float],
+    min_free: Mapping[PriceSlot, float],
+) -> dict[str, Any]:
+    """Describe why each price slot was or was not taken as a charge candidate.
+
+    ``max_usable`` is the largest ``room(slot, free)`` the planner computed for
+    the slot across its passes (zero means the room rule refused it every time
+    it was offered) and ``min_free`` is the slot capacity it was offered in the
+    tightest of those passes, so ``min_free - max_usable`` is the energy the
+    room rule held back.  Both are read-only inputs: building this record
+    cannot change a plan.
+    """
+    candidate_set = set(candidates)
+    premium_set = set(premium_candidates)
+    records: list[dict[str, Any]] = []
+    for slot in sorted(price_slots, key=lambda item: item.start):
+        ceiling = ceiling_of(slot)
+        published_ceiling = candidate_trace_ceiling(ceiling)
+        price = _candidate_trace_number(slot.price)
+        allocated = float(allocations.get(slot, 0.0) or 0.0)
+        usable_value = max_usable.get(slot)
+        usable = (
+            _candidate_trace_number(usable_value)
+            if usable_value is not None
+            else None
+        )
+        free_value = min_free.get(slot)
+        source = decision.get(slot)
+        record: dict[str, Any] = {
+            "slot_start": slot.start.isoformat(),
+            "slot_end": slot.end.isoformat(),
+            "price": price,
+            "ceiling": published_ceiling if has_ceiling else None,
+        }
+        if allocated > _EPSILON:
+            record["verdict"] = "chosen"
+            record["decided_by"] = source or "flexible"
+        elif slot not in candidate_set and slot not in premium_set:
+            record["decided_by"] = None
+            if slot.end <= now:
+                record["verdict"] = "past"
+            elif slot.start >= horizon_end:
+                record["verdict"] = "out_of_horizon"
+            elif price is None:
+                record["verdict"] = "unpriced"
+            elif has_ceiling and published_ceiling is not None:
+                if slot.price > ceiling:
+                    record["verdict"] = "too_expensive"
+                else:
+                    record["verdict"] = "other:below_ceiling_not_offered"
+            else:
+                record["verdict"] = "other:not_offered"
+        else:
+            # Candidate or premium slot.  ``usable`` is the largest amount the
+            # room rule ever left for it; 0 means the rule itself refused.
+            offered = source is not None
+            record["decided_by"] = source
+            if usable is not None and usable <= _EPSILON:
+                record["verdict"] = "no_room"
+            elif offered:
+                record["verdict"] = "not_needed"
+            else:
+                record["verdict"] = "other:not_offered"
+        if usable is not None:
+            record["usable_kwh"] = usable
+            record["room_kwh"] = usable
+        free_value = min_free.get(slot)
+        if usable is not None and free_value is not None:
+            # Exactly the ``free - usable`` the allocator subtracted, kept from
+            # the passes that were most generous about this slot so a later
+            # re-measurement cannot inflate it.
+            record["blocked_kwh"] = _candidate_trace_number(
+                max(0.0, float(free_value) - float(usable_value or 0.0))
+            )
+        records.append(record)
+    return {
+        "schema_version": 1,
+        "unit": "kWh",
+        "price_unit": "EUR/kWh",
+        "ceiling": "per_slot" if has_ceiling else "none",
+        "now": now.isoformat(),
+        "horizon_end": horizon_end.isoformat(),
+        "records": records,
+    }
 
 
 @dataclass(frozen=True)
@@ -598,6 +768,32 @@ def allocate_price_slots(
     deadline_shortfall = 0.0
     cheaper_to_import = 0.0
     any_valued_pool = False
+    # Measurement-only bookkeeping (``ChronologicalPlan.candidate_trace``).  It
+    # records values the planner already computes and is never read back while
+    # allocating, so the plan is identical whether or not it is collected.
+    trace_decided_by: dict[PriceSlot, str] = {}
+    trace_usable: dict[PriceSlot, float] = {}
+    trace_free: dict[PriceSlot, float] = {}
+    trace_blocked: dict[PriceSlot, float] = {}
+
+    def trace_room(slot: PriceSlot, free: float, usable: float, source: str) -> None:
+        """Record the room the planner left this slot and what it blocked.
+
+        Every pass evaluates the same ``room()`` the allocator uses.  The
+        largest ``usable`` is the room the quarter-hour had at a moment the
+        planner actually considered it, and the smallest ``free`` is the
+        capacity it was offered in the tightest context, so ``free - usable``
+        is exactly the ``free - usable`` the allocator subtracted.  ``usable ==
+        0`` means the room rule refused the slot every time it was offered,
+        which is what makes a ``no_room`` verdict meaningful.  ``decided_by``
+        keeps the first pass that offered the slot: how it entered the plan.
+        """
+        trace_usable[slot] = max(trace_usable.get(slot, 0.0), usable)
+        trace_free[slot] = min(trace_free.get(slot, free), free)
+        trace_blocked[slot] = max(
+            0.0, trace_free[slot] - trace_usable[slot]
+        )
+        trace_decided_by.setdefault(slot, source)
 
     def capacity(
         slot: PriceSlot,
@@ -771,6 +967,7 @@ def allocate_price_slots(
             )
             usable = room(slot, free) if clip else free
             blocked += free - usable
+            trace_room(slot, free, usable, f"deadline:{deadline.kind}")
             take = min(missing, usable)
             if take <= _EPSILON:
                 continue
@@ -796,6 +993,7 @@ def allocate_price_slots(
             )
             usable = room(slot, free) if clip else free
             blocked += free - usable
+            trace_room(slot, free, usable, "premium")
             take = min(missing, usable, premium_budget)
             if take <= _EPSILON:
                 continue
@@ -831,6 +1029,7 @@ def allocate_price_slots(
         free = max(0.0, capacity(slot) - allocations.get(slot, 0.0))
         usable = room(slot, free)
         blocked += free - usable
+        trace_room(slot, free, usable, "flexible")
         take = min(missing_total, usable)
         if take <= _EPSILON:
             continue
@@ -843,6 +1042,7 @@ def allocate_price_slots(
         free = max(0.0, capacity(slot) - allocations.get(slot, 0.0))
         usable = room(slot, free)
         blocked += free - usable
+        trace_room(slot, free, usable, "premium")
         take = min(missing_total, usable, premium_budget)
         if take <= _EPSILON:
             continue
@@ -949,6 +1149,21 @@ def allocate_price_slots(
         if rejected is not None:
             cheapest_rejected = (rejected.start, rejected.price, ceiling_of(rejected))
     earliest = simulation.earliest_depletion_at
+    candidate_trace: dict[str, Any] | None = None
+    if _CANDIDATE_TRACE_ENABLED and len(price_slots) <= _CANDIDATE_TRACE_MAX_SLOTS:
+        candidate_trace = build_candidate_trace(
+            price_slots=price_slots,
+            candidates=candidates,
+            premium_candidates=premium_candidates,
+            now=now,
+            horizon_end=horizon_end,
+            ceiling_of=ceiling_of,
+            has_ceiling=has_ceiling,
+            allocations=allocations,
+            decision=trace_decided_by,
+            max_usable=trace_usable,
+            min_free=trace_free,
+        )
     return ChronologicalPlan(
         intervals=intervals,
         deadlines=deadlines,
@@ -964,6 +1179,7 @@ def allocate_price_slots(
         reason=reason,
         cheaper_to_import_kwh=cheaper_to_import,
         cheapest_rejected=cheapest_rejected,
+        candidate_trace=candidate_trace,
     )
 
 

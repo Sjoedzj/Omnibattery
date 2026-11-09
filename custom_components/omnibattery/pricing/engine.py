@@ -183,6 +183,9 @@ _CHRONOLOGICAL_DIAGNOSTIC_KEYS = (
     "guaranteed_floor_deadline",
     "cheaper_to_import_kwh",
     "cheapest_rejected_slot",
+    # Measurement only (make the quarter-hour candidate filter visible). It is
+    # copied into the diagnostics payload but never read back by the planner.
+    "charge_candidates",
 )
 
 
@@ -3578,6 +3581,10 @@ class PricingManager:
                     }
                     for item in diagnostics.energy_deadlines
                 ],
+                # Measurement only: per-slot explanation of the allocation
+                # decision above.  It changes no allocation, slot or flow and
+                # is published by ``diagnostics.charge_candidates``.
+                "charge_candidates": plan.candidate_trace,
             })
             # The dashboard's explicit cross-midnight simulation is a view,
             # not a new control decision. Retaining its expanded solar budget
