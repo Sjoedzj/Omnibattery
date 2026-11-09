@@ -1512,6 +1512,13 @@ def _timeline_projection_extension(value: object) -> list[dict[str, object]]:
     numeric_fields = {
         "solar_kwh",
         "consumption_kwh",
+        # The published forecast of a blocked quarter.  ``solar_kwh`` and
+        # ``consumption_kwh`` above keep the netted simulation values (#616);
+        # without these two the panel's after-midnight band can only show the
+        # netted solar, so the same quarter reads differently before and after
+        # the day rolls over.
+        "solar_forecast_kwh",
+        "consumption_forecast_kwh",
         "solar_to_battery_kwh",
         "grid_to_battery_kwh",
         "battery_to_home_kwh",
