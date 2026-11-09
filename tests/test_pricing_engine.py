@@ -771,6 +771,189 @@ def test_refresh_solar_forecast_reference_disarms_the_trigger():
     assert manager._is_solar_forecast_reeval(_CLAIM_NOW) is False
 
 
+# ----------------------------------------------------------------------
+# _is_solar_forecast_reeval without measured production growth (stuck meter)
+# ----------------------------------------------------------------------
+
+def test_solar_forecast_reeval_without_production_growth_spends_the_budget_once():
+    # Dead production meter: the accumulator never grows, so the projection is
+    # the stale reference and every decline in the remaining forecast looks like
+    # a revision. It may fire at most once a day, and after that must leave the
+    # budget for a real midday revision.
+    ctrl = _forecast_ctrl(13.1)
+    manager = _forecast_mgr(ctrl, 4.1, produced=0.0)
+    manager._dp_solar_forecast_reeval_at = _CLAIM_NOW - timedelta(minutes=45)
+    assert manager._is_solar_forecast_reeval(_CLAIM_NOW) is True
+
+    # The evaluation consumed the trigger: it stamps the once-a-day fallback and
+    # spends one of the four daily re-evaluations.
+    ctrl._dp_solar_forecast_reeval_no_prod_date = _CLAIM_NOW.date()
+    ctrl._dp_solar_forecast_reeval_at = _CLAIM_NOW
+    ctrl._dp_solar_forecast_reeval_count += 1
+
+    # An hour later the forecast declined again with still no production to
+    # prove the projection. The one projection-less firing is used up.
+    assert manager._is_solar_forecast_reeval(_CLAIM_NOW + timedelta(hours=1)) is False
+    assert ctrl._dp_solar_forecast_reeval_count == 1
+
+
+def test_solar_forecast_reeval_with_production_growth_keeps_firing():
+    # Same shape as the once-a-day fallback, but the accumulator moved: this is
+    # a proven projection, so the trigger keeps working within its cooldown and
+    # daily cap. The fix must not gag a genuine revision.
+    ctrl = _forecast_ctrl(13.1, produced_reference=1.0)
+    manager = _forecast_mgr(ctrl, 4.1, produced=1.8)
+    assert manager._is_solar_forecast_reeval(_CLAIM_NOW) is True
+
+
+def test_solar_forecast_reeval_no_production_fallback_never_runs_before_the_reference():
+    # No stored projection halves: the predicate stays silent, as before.
+    ctrl = _forecast_ctrl(None, produced_reference=None)
+    assert _forecast_mgr(ctrl, 4.1, produced=0.0)._is_solar_forecast_reeval(_CLAIM_NOW) is False
+
+
+# ----------------------------------------------------------------------
+# _is_deficit_reeval (the expected shortfall itself grew)
+# ----------------------------------------------------------------------
+
+def _deficit_ctrl(reference, current, **overrides):
+    """Controller stub for the deficit-driven re-evaluation predicate."""
+    base = dict(
+        _dp_last_eval_deficit_kwh=reference,
+        _last_decision_data={"energy_deficit_kwh": current},
+        _dp_deficit_reeval_at=None,
+        _dp_solar_forecast_reeval_count=0,
+    )
+    base.update(overrides)
+    return _controller(**base)
+
+
+def test_deficit_reeval_false_before_the_first_evaluation():
+    ctrl = _deficit_ctrl(None, 4.0)
+    assert _mgr(ctrl)._is_deficit_reeval(_CLAIM_NOW) is False
+
+
+def test_deficit_reeval_true_when_the_shortfall_grows():
+    ctrl = _deficit_ctrl(2.0, 3.0)
+    assert _mgr(ctrl)._is_deficit_reeval(_CLAIM_NOW) is True
+
+
+def test_deficit_reeval_false_below_threshold():
+    ctrl = _deficit_ctrl(2.0, 2.9)
+    assert _mgr(ctrl)._is_deficit_reeval(_CLAIM_NOW) is False
+
+
+def test_deficit_reeval_true_exactly_at_the_threshold():
+    ctrl = _deficit_ctrl(2.0, 3.0)
+    assert _mgr(ctrl)._is_deficit_reeval(_CLAIM_NOW) is True
+
+
+def test_deficit_reeval_false_when_the_shortfall_shrinks():
+    # A falling deficit needs no rebuild: the pre-slot check already withdraws
+    # slots that are no longer required, and firing here would spend the day's
+    # budget on the ordinary evening decline.
+    ctrl = _deficit_ctrl(6.0, 2.0)
+    assert _mgr(ctrl)._is_deficit_reeval(_CLAIM_NOW) is False
+
+
+def test_deficit_reeval_false_when_no_plan_stated_a_deficit():
+    ctrl = _deficit_ctrl(2.0, 3.0, _last_decision_data={})
+    assert _mgr(ctrl)._is_deficit_reeval(_CLAIM_NOW) is False
+
+
+def test_deficit_reeval_false_late_in_the_evening():
+    ctrl = _deficit_ctrl(2.0, 5.0)
+    late = _CLAIM_NOW.replace(hour=23, minute=10)
+    assert _mgr(ctrl)._is_deficit_reeval(late) is False
+
+
+def test_deficit_reeval_respects_cooldown():
+    ctrl = _deficit_ctrl(2.0, 3.0, _dp_deficit_reeval_at=_CLAIM_NOW - timedelta(minutes=5))
+    assert _mgr(ctrl)._is_deficit_reeval(_CLAIM_NOW) is False
+
+    ctrl._dp_deficit_reeval_at = _CLAIM_NOW - timedelta(minutes=11)
+    assert _mgr(ctrl)._is_deficit_reeval(_CLAIM_NOW) is True
+
+
+def test_deficit_reeval_shares_the_daily_cap_with_the_forecast_trigger():
+    # One budget, not two: the cap is what bounds how often a rebuild can break
+    # a running charge, so a separate counter would double the interruptions.
+    ctrl = _deficit_ctrl(2.0, 3.0, _dp_solar_forecast_reeval_count=4)
+    assert _mgr(ctrl)._is_deficit_reeval(_CLAIM_NOW) is False
+
+
+def test_deficit_reeval_never_disturbs_the_same_live_charge_twice():
+    # A rebuild can drop the live slot and stop the charge, so a deficit that
+    # keeps creeping up must not re-plan on every cycle it grows.
+    live = SimpleNamespace(start=_CLAIM_NOW - timedelta(minutes=10))
+    ctrl = _deficit_ctrl(
+        2.0,
+        3.0,
+        _current_price_slot_active=True,
+        _active_dynamic_price_slot=live,
+        _dp_deficit_reeval_active_slot=live.start,
+    )
+    assert _mgr(ctrl)._is_deficit_reeval(_CLAIM_NOW) is False
+
+
+def test_deficit_reeval_still_fires_once_inside_a_live_charge():
+    live = SimpleNamespace(start=_CLAIM_NOW - timedelta(minutes=10))
+    ctrl = _deficit_ctrl(
+        2.0,
+        3.0,
+        _current_price_slot_active=True,
+        _active_dynamic_price_slot=live,
+        _dp_deficit_reeval_active_slot=None,
+    )
+    assert _mgr(ctrl)._is_deficit_reeval(_CLAIM_NOW) is True
+
+
+def test_deficit_reeval_re_arms_after_the_live_charge_ends():
+    # The marker only ever silences the *same* running charge.
+    live = SimpleNamespace(start=_CLAIM_NOW - timedelta(minutes=10))
+    ctrl = _deficit_ctrl(
+        2.0,
+        3.0,
+        _current_price_slot_active=False,
+        _active_dynamic_price_slot=None,
+        _dp_deficit_reeval_active_slot=live.start,
+    )
+    assert _mgr(ctrl)._is_deficit_reeval(_CLAIM_NOW) is True
+
+
+def test_deficit_reeval_cap_re_arms_on_a_new_day():
+    ctrl = _deficit_ctrl(
+        2.0,
+        3.0,
+        _dp_solar_forecast_reeval_count=4,
+        _dp_solar_forecast_reeval_date=_CLAIM_NOW.date() - timedelta(days=1),
+    )
+    assert _mgr(ctrl)._is_deficit_reeval(_CLAIM_NOW) is True
+    assert ctrl._dp_solar_forecast_reeval_count == 0
+
+
+def test_refresh_deficit_reference_stores_the_live_deficit():
+    ctrl = _deficit_ctrl(None, 3.0)
+    _mgr(ctrl)._refresh_deficit_reference()
+    assert ctrl._dp_last_eval_deficit_kwh == 3.0
+
+
+def test_refresh_deficit_reference_keeps_the_old_value_on_unavailable():
+    # A decision that briefly stops stating a deficit must not reset the
+    # reference to zero: its return would then read as a full-value rise.
+    ctrl = _deficit_ctrl(3.0, None)
+    _mgr(ctrl)._refresh_deficit_reference()
+    assert ctrl._dp_last_eval_deficit_kwh == 3.0
+
+
+def test_refresh_deficit_reference_disarms_the_trigger():
+    ctrl = _deficit_ctrl(2.0, 3.0)
+    manager = _mgr(ctrl)
+    assert manager._is_deficit_reeval(_CLAIM_NOW) is True
+    manager._refresh_deficit_reference()
+    assert manager._is_deficit_reeval(_CLAIM_NOW) is False
+
+
 def _balance_ctrl(**overrides):
     """Controller stub carrying only the balance knobs the fingerprint reads."""
     base = dict(

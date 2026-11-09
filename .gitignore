@@ -22,6 +22,8 @@ desktop.ini
 # Testing and coverage
 .venv-test/
 .pytest_cache/
+# pytest's default basetemp under the CWD, left behind when --basetemp is unusable
+pytest-of-*/
 .coverage
 .coverage.*
 htmlcov/

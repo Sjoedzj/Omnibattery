@@ -656,6 +656,22 @@ SOLAR_FORECAST_REEVAL_COOLDOWN_MIN = 30   # Minimum minutes between two forecast
 SOLAR_FORECAST_REEVAL_MAX_PER_DAY = 4     # Cap on forecast-driven re-evaluations per day
 SOLAR_FORECAST_DAILY_RETRY_LIMIT = 3      # Deferrals while the forecast sensor still reads zero (last ladder call plans)
 
+# Deficit re-evaluation: the outcome the forecast trigger is only a proxy for.
+# The remaining forecast can be revised without materialising as extra energy to
+# buy (a low SOC or a rising base load moves the deficit on its own), so the
+# balance is re-planned when the *expected shortfall* itself grows. One trigger
+# cannot cover the other: the deficit also moves when the provider said nothing
+# at all, and a forecast revision only reaches this predicate through its effect
+# on the balance.
+DEFICIT_REEVAL_KWH = 1.0             # Rise in the expected deficit that warrants a re-plan
+DEFICIT_REEVAL_COOLDOWN_MIN = 10     # Minimum minutes between two deficit-driven re-evaluations
+# Deliberately shares SOLAR_FORECAST_REEVAL_MAX_PER_DAY: the cap, not the
+# threshold, is what keeps a rebuild from breaking a running charge (a rebuild
+# that selects nothing stops the live slot), so both forecast-driven triggers
+# must draw on the same daily budget of 4. A separate counter would double the
+# number of times per day a live charge can be interrupted.
+DEFICIT_REEVAL_MAX_PER_DAY = SOLAR_FORECAST_REEVAL_MAX_PER_DAY
+
 # Weekday mapping (mon=0, sun=6, matches datetime.weekday())
 WEEKDAY_MAP = {
     "mon": 0, "tue": 1, "wed": 2, "thu": 3,

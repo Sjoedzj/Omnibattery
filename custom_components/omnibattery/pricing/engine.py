@@ -59,6 +59,9 @@ from ..const import (
     SOLAR_FORECAST_REEVAL_COOLDOWN_MIN,
     SOLAR_FORECAST_REEVAL_MAX_PER_DAY,
     SOLAR_FORECAST_DAILY_RETRY_LIMIT,
+    DEFICIT_REEVAL_KWH,
+    DEFICIT_REEVAL_COOLDOWN_MIN,
+    DEFICIT_REEVAL_MAX_PER_DAY,
     T_START_FALLBACK_HOUR,
     FLOOR_HYSTERESIS_PCT,
     CHARGE_EFFICIENCY,
@@ -3918,6 +3921,7 @@ class PricingManager:
         # trigger is measured against the reading this plan was built on.
         self._refresh_excluded_demand_reference()
         self._refresh_solar_forecast_reference(now)
+        self._refresh_deficit_reference()
         deficit_charging_needed = bool(decision_data["should_charge"])
 
         # Step 2: Parse price data (always, even without deficit — for diagnostics)
@@ -4682,6 +4686,7 @@ class PricingManager:
                 # another re-evaluation.
                 self._refresh_excluded_demand_reference()
                 self._refresh_solar_forecast_reference(now)
+                self._refresh_deficit_reference()
             deficit_needed = bool(decision["should_charge"])
             if (
                 getattr(schedule, "chronological_planning_active", False)
@@ -4942,6 +4947,24 @@ class PricingManager:
             return None
         return value if math.isfinite(value) else None
 
+    def _solar_projection_is_proven(self, produced: float) -> bool:
+        """True when production grew since the stored forecast reference.
+
+        That growth is what makes the projection mean anything: without it the
+        projection is the stale reference and the forecast's ordinary decline
+        reads as a revision. Shared by the predicate and its caller so the
+        caller can mark the one projection-less firing of the day.
+        """
+        ref_produced = getattr(
+            self._controller, "_dp_last_eval_solar_produced_kwh", None
+        )
+        if ref_produced is None:
+            return False
+        try:
+            return float(produced) > float(ref_produced)
+        except (TypeError, ValueError):
+            return False
+
     def _is_solar_forecast_reeval(self, now: datetime) -> bool:
         """Return True when the provider revised the remaining solar forecast.
 
@@ -4964,6 +4987,17 @@ class PricingManager:
         evaluation, so it re-arms only after another material move. A ``None``
         reference (before the first evaluation of the day) never triggers, and
         an unavailable sensor never triggers either.
+
+        With a production source configured but *no* production measured since
+        the reference was taken, the projection below is the stale reference
+        itself, so every future decline in the remaining forecast reads as a
+        revision and the daily budget is spent before noon on an installation
+        whose production meter is dead. Growth of the accumulator is what makes
+        the projection meaningful, so the trigger only spends the budget freely
+        once it is proven. Without growth it stays available but fires at most
+        once a day: a provider that genuinely revises the rest of the day down
+        on a day with no production reading at all still gets its re-plan, while
+        an ordinary decline can no longer drain the cap.
         """
         controller = self._controller
         ref = getattr(controller, "_dp_last_eval_solar_remaining_kwh", None)
@@ -4980,9 +5014,16 @@ class PricingManager:
         if current is None or produced is None:
             return False
         harvested_since = max(0.0, produced - ref_produced)
+        projection_proven = self._solar_projection_is_proven(produced)
         projected = max(0.0, ref - harvested_since)
         if abs(current - projected) < SOLAR_FORECAST_REEVAL_KWH:
             return False
+        if not projection_proven:
+            # One projection-less firing per day. A stale reference decays by
+            # the forecast's own decline, so without this the cap would be gone
+            # by noon and a real midday revision would find an empty budget.
+            if getattr(controller, "_dp_solar_forecast_reeval_no_prod_date", None) == now.date():
+                return False
         if self._roll_solar_forecast_reeval_day(now) >= SOLAR_FORECAST_REEVAL_MAX_PER_DAY:
             return False
         last_at = getattr(controller, "_dp_solar_forecast_reeval_at", None)
@@ -5060,6 +5101,95 @@ class PricingManager:
             return
         self._controller._dp_last_eval_solar_remaining_kwh = current
         self._controller._dp_last_eval_solar_produced_kwh = produced
+
+    def _read_deficit_reference_kwh(self) -> float | None:
+        """Expected shortfall of the last plan, or None when it never stated one."""
+        decision = getattr(self._controller, "_last_decision_data", None)
+        if not isinstance(decision, dict):
+            return None
+        value = decision.get("energy_deficit_kwh")
+        if value is None:
+            return None
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+
+    def _is_deficit_reeval(self, now: datetime) -> bool:
+        """Return True when the expected shortfall grew materially since the plan.
+
+        The forecast trigger above only sees the *input*; what the battery must
+        actually buy also moves when the provider said nothing at all — a low
+        SOC or a higher base load raises the deficit on its own, and no later
+        pass in ``_check_dp_pre_slot_reevaluation`` can add the missing energy
+        back, it can only drop planned slots. So the deficit the last balance
+        was built on is compared with the live one and a rise of at least
+        ``DEFICIT_REEVAL_KWH`` re-plans.
+
+        Directional, unlike its siblings: a *falling* deficit needs no rebuild,
+        because the pre-slot check already withdraws slots that are no longer
+        needed, and firing on both directions would spend the daily budget on
+        the ordinary decline of the evening.
+
+        The reference is refreshed on every evaluation, so the trigger re-arms
+        only after another material rise; a ``None`` reference (no plan yet, or
+        a decision that never stated a deficit) never triggers. The daily cap is
+        shared with the forecast trigger — see ``DEFICIT_REEVAL_MAX_PER_DAY`` —
+        because that cap, not the threshold, is what bounds how often a running
+        charge can be disturbed.
+        """
+        controller = self._controller
+        ref = getattr(controller, "_dp_last_eval_deficit_kwh", None)
+        if ref is None:
+            return False
+        if now.hour >= 23 or (now.hour == 0 and now.minute <= 5):
+            # The 00:05 evaluation is close enough; don't clash with it.
+            return False
+        current = self._read_deficit_reference_kwh()
+        if current is None:
+            return False
+        if (current - ref) < DEFICIT_REEVAL_KWH:
+            return False
+        # Never twice while the same charge is running. A rebuild can drop the
+        # live slot and stop the charge, and a deficit that keeps creeping up
+        # would otherwise re-plan on every cycle it grows — the jojo the cap is
+        # meant to prevent, only faster. Waiting for the slot to end costs at
+        # most one slot's worth of delay, and the undelivered quota is carried
+        # over to a later slot anyway (``_carry_over_slot_shortfall``). The
+        # forecast and claim triggers deliberately accept that risk instead; this
+        # one can afford not to, because it re-arms by itself.
+        active_slot = getattr(controller, "_active_dynamic_price_slot", None)
+        if (
+            getattr(controller, "_current_price_slot_active", False)
+            and active_slot is not None
+            and getattr(controller, "_dp_deficit_reeval_active_slot", None)
+            == active_slot.start
+        ):
+            return False
+        if self._roll_solar_forecast_reeval_day(now) >= DEFICIT_REEVAL_MAX_PER_DAY:
+            return False
+        last_at = getattr(controller, "_dp_deficit_reeval_at", None)
+        if last_at is not None and (now - last_at) < timedelta(
+            minutes=DEFICIT_REEVAL_COOLDOWN_MIN
+        ):
+            return False
+        return True
+
+    def _refresh_deficit_reference(self) -> None:
+        """Re-arm the deficit trigger against the shortfall this plan was built on.
+
+        Called from every path that rebuilds the plan — the two references share
+        one call site with the solar projection — so a re-evaluation that
+        already accounts for the current deficit does not immediately ask for
+        another one. An unreadable value keeps the previous reference: the
+        predicate refuses to fire while the reading is ``None``, so nothing is
+        missed, and a decision that briefly stops stating a deficit cannot make
+        its return look like a fresh rise.
+        """
+        current = self._read_deficit_reference_kwh()
+        if current is not None:
+            self._controller._dp_last_eval_deficit_kwh = current
 
     def _read_excluded_demand_claim_kwh(self) -> float | None:
         """Raw excluded-device claim reading, or None when unavailable."""
@@ -6325,8 +6455,43 @@ class PricingManager:
             self._controller._dp_solar_forecast_reeval_count = (
                 getattr(self._controller, "_dp_solar_forecast_reeval_count", 0) + 1
             )
+            if not self._solar_projection_is_proven(
+                self._read_solar_produced_today_kwh(now)
+            ):
+                # Spend the day's single projection-less firing here: the
+                # predicate cannot stamp it itself without side effects.
+                self._controller._dp_solar_forecast_reeval_no_prod_date = now.date()
             _LOGGER.info(
                 "Dynamic pricing: remaining solar forecast changed — re-evaluating"
+            )
+            await self._evaluate_dynamic_pricing(
+                horizon=DynamicPricingEvaluationHorizon.REMAINING,
+            )
+
+        # Phase 2.8.1: Re-plan when the expected shortfall itself grew. The
+        # forecast trigger above only sees the input; a low SOC or a higher base
+        # load raises the deficit without the provider saying anything, and no
+        # later pass can add the missing energy back — only drop planned slots.
+        # Like 2.7/2.8 this may disturb a running charge, because that charge was
+        # sized on the old deficit; unlike them it is allowed to disturb the same
+        # charge only once (see the predicate), so a slowly creeping deficit
+        # cannot re-plan cycle after cycle.
+        elif self._is_deficit_reeval(now):
+            self._controller._dp_deficit_reeval_at = now
+            active_slot = getattr(
+                self._controller, "_active_dynamic_price_slot", None
+            )
+            if getattr(self._controller, "_current_price_slot_active", False) and (
+                active_slot is not None
+            ):
+                # Remember which charge this rebuild was allowed to disturb, so
+                # a further rise cannot disturb the same one again.
+                self._controller._dp_deficit_reeval_active_slot = active_slot.start
+            self._controller._dp_solar_forecast_reeval_count = (
+                getattr(self._controller, "_dp_solar_forecast_reeval_count", 0) + 1
+            )
+            _LOGGER.info(
+                "Dynamic pricing: expected energy deficit grew — re-evaluating"
             )
             await self._evaluate_dynamic_pricing(
                 horizon=DynamicPricingEvaluationHorizon.REMAINING,
@@ -6393,6 +6558,10 @@ class PricingManager:
                 self._controller._dp_excluded_demand_reeval_count = 0
                 self._controller._dp_last_eval_solar_remaining_kwh = None
                 self._controller._dp_last_eval_solar_produced_kwh = None
+                self._controller._dp_last_eval_deficit_kwh = None
+                self._controller._dp_solar_forecast_reeval_no_prod_date = None
+                self._controller._dp_deficit_reeval_at = None
+                self._controller._dp_deficit_reeval_active_slot = None
                 self._controller._dp_solar_forecast_reeval_at = None
                 self._controller._dp_solar_forecast_reeval_count = 0
                 self._reset_predictive_demand_runtime()
@@ -6865,6 +7034,12 @@ class PricingManager:
                     self._controller._dp_solar_forecast_reeval_count = (
                         getattr(self._controller, "_dp_solar_forecast_reeval_count", 0) + 1
                     )
+                    if not self._solar_projection_is_proven(
+                        self._read_solar_produced_today_kwh(now)
+                    ):
+                        self._controller._dp_solar_forecast_reeval_no_prod_date = (
+                            now.date()
+                        )
                 if is_initial_eval:
                     _LOGGER.info("INITIAL evaluation of predictive grid charging (SOC: %.1f%%)", current_avg_soc)
                 elif forecast_moved:
