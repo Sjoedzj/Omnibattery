@@ -789,6 +789,104 @@ def _charge_candidates(controller: object) -> dict[str, Any]:
     }
 
 
+def _discharge_decision_source(controller: object) -> dict[str, Any] | None:
+    """Return the per-quarter discharge trace the control path recorded.
+
+    The trace is fed by ``ChargeDischargeController._refresh_operation_blockers``
+    from the live blocker registry, so a dump taken before the first control
+    cycle (or on an older controller) simply has no trace.
+    """
+    trace = getattr(controller, "_discharge_decision_trace", None)
+    getter = getattr(trace, "snapshot", None)
+    if not callable(getter):
+        return None
+    try:
+        payload = getter()
+    except Exception:  # noqa: BLE001 - diagnostics must stay best-effort
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _discharge_verdict(record: object) -> str | None:
+    """Return the bounded verdict string of one discharge record."""
+    if not isinstance(record, dict):
+        return None
+    verdict = record.get("verdict")
+    return verdict[:48] if isinstance(verdict, str) and verdict else None
+
+
+def _discharge_record(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Project one trace record into the bounded 0-95 diagnostics record."""
+    index = _timeline_int(payload.get("index"))
+    if index is None or index >= 96:
+        return None
+    start = payload.get("slot_start")
+    blockers = payload.get("blockers")
+    return {
+        "index": index,
+        "slot_start": start[:32] if isinstance(start, str) else None,
+        "price": _rounded_number(payload.get("price"), 6),
+        "threshold": _rounded_number(payload.get("threshold"), 6),
+        "reserve_kwh": _rounded_number(payload.get("reserve_kwh"), 3),
+        "reserved_floor": _rounded_number(payload.get("reserved_floor"), 2),
+        "soc_pct": _rounded_number(payload.get("soc_pct"), 2),
+        "discharge_kwh": _rounded_number(payload.get("discharge_kwh"), 3),
+        "verdict": _discharge_verdict(payload) or "unknown",
+        "blockers": (
+            sorted(str(name)[:48] for name in blockers if isinstance(name, str))
+            if isinstance(blockers, (list, tuple))
+            else []
+        ),
+    }
+
+
+def _discharge_decisions(controller: object) -> dict[str, Any]:
+    """Publish why each quarter-hour did or did not discharge.
+
+    The mirror image of ``charge_candidates`` for the other direction: the
+    ``charge_candidates`` block explains the grid-charge filter, this one names
+    the reason a quarter was allowed to discharge or was held back. Every value
+    comes from the real control path - the price and threshold it compared, the
+    blocker registry it rebuilt, the reserve the manager published and the
+    measured discharge - never from a re-derived projection.
+
+    Bounded to 96 records of ten fields and never a ``series`` array. A quarter
+    that was not observed (restart, reload) keeps ``null`` values and the verdict
+    ``past``, so a missing price is never reported as a real ``0``.
+    """
+    trace = _discharge_decision_source(controller)
+    if trace is None:
+        return {
+            "available": False,
+            "date": None,
+            "records": [],
+            "summary": {},
+        }
+    raw = trace.get("records")
+    records: list[dict[str, Any]] = []
+    if isinstance(raw, (list, tuple)):
+        for payload in raw[:96]:
+            if not isinstance(payload, Mapping):
+                continue
+            record = _discharge_record(payload)
+            if record is not None:
+                records.append(record)
+    records.sort(key=lambda record: record["index"])
+    summary: dict[str, int] = {}
+    for record in records:
+        verdict = record["verdict"]
+        summary[verdict] = summary.get(verdict, 0) + 1
+    interval = _timeline_int(trace.get("interval_minutes"))
+    return {
+        "available": bool(trace.get("available")),
+        "date": trace.get("date"),
+        "interval_minutes": interval or 15,
+        "record_count": len(records),
+        "records": records,
+        "summary": summary,
+    }
+
+
 def _daily_operation_timeline_summary(controller) -> dict[str, Any]:
     """Return bounded diagnostics for the current daily-operation snapshot.
 
@@ -854,6 +952,9 @@ def _daily_operation_timeline_summary(controller) -> dict[str, Any]:
             # A failed timeline projection must not hide the candidate trace:
             # it comes from the planner, not from the timeline manager.
             "charge_candidates": _charge_candidates(controller),
+            # Same argument for the discharge trace: it comes from the control
+            # path, not from the timeline projection that just failed.
+            "discharge_decisions": _discharge_decisions(controller),
         }
 
     setpoint = dict(payload.get("setpoint") or {})
@@ -1036,6 +1137,9 @@ def _daily_operation_timeline_summary(controller) -> dict[str, Any]:
         # Per quarter-hour explanation of the grid-charge candidate filter
         # (bounded: 96 records, never a ``series`` array).
         "charge_candidates": _charge_candidates(controller),
+        # Per quarter-hour explanation of the discharge decision, read from the
+        # real control path's own blocker registry (same bound).
+        "discharge_decisions": _discharge_decisions(controller),
         "estimated_setpoint_time": (
             setpoint.get("estimated_completion")
         ),

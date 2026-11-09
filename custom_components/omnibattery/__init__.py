@@ -252,6 +252,7 @@ from .infra.lifecycle import is_reload_pending
 from .control.charge_delay import ChargeDelayManager
 from .control.residual_load import apply_guards, guards_pending
 from .drivers.base import DELIVERED_AC_POWER_KEY, has_connected_mppt_pv
+from .control.discharge_trace import DischargeDecisionTrace
 from .control.discharge_reserve import (
     RESERVE_SOC_TOLERANCE_PCT,
     DischargeReserveManager,
@@ -1232,6 +1233,10 @@ class ChargeDischargeController:
         self._discharge_reserve_mgr = DischargeReserveManager(hass, self)
         # Per-cycle cache of the reserve, refreshed by the discharge blocker pass.
         self._price_reserve_soc_pct = 0.0
+        # Per-quarter record of what that blocking pass decided, fed at the end
+        # of every cycle and read by the diagnostics download. Measurement only:
+        # it reads the registries and never writes to them.
+        self._discharge_decision_trace = DischargeDecisionTrace(self)
 
         # Consumption history for dynamic base consumption (7-day rolling average)
         # Owned by ConsumptionTracker; the list lives on the controller so
@@ -4446,6 +4451,13 @@ class ChargeDischargeController:
         # every line above has just rebuilt, so it must read it complete.
         self._high_price_discharge_mgr.refresh_override()
         self._price_based_discharge_blocked = "price_discharge" in self._global_discharge_blockers
+        # Measurement only, and last: record what this pass just decided for the
+        # current quarter, so the diagnostics can explain a discharge (or its
+        # absence) from the live registries instead of re-deriving the rule. It
+        # reads state and writes none, so the cycle above is unaffected.
+        trace = getattr(self, "_discharge_decision_trace", None)
+        if trace is not None:
+            trace.observe()
 
     def _refresh_surplus_price_hold_block(self) -> None:
         """Let PV surplus export while cheaper feed-in hours are still ahead.
