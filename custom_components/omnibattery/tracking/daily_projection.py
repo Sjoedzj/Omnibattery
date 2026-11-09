@@ -42,6 +42,35 @@ def _finite(value: Any, default: float = 0.0) -> float:
     return parsed if math.isfinite(parsed) else default
 
 
+def _published_consumption(interval: Any) -> float:
+    """Demand to publish, independent of whether the battery may discharge.
+
+    The planner zeroes ``consumption_kwh`` on intervals where a price block or a
+    no-discharge window stops the battery, because that interval drains nothing.
+    The household demand does not disappear with it, so the published forecast
+    reads the demand the interval carries instead.  Intervals that were never
+    blocked report the same value either way.
+    """
+    demand = getattr(interval, "demand_kwh", None)
+    if demand is None:
+        demand = getattr(interval, "consumption_kwh", 0.0)
+    return _finite(demand)
+
+
+def _published_solar(interval: Any) -> float:
+    """Solar to publish, independent of whether the battery may discharge.
+
+    A blocked interval keeps ``solar_kwh`` netted against the household
+    consumption for the simulation (#616).  The graph still has to show the
+    solar forecast itself, which rides along in ``solar_publication_kwh``.  An
+    unblocked interval has no such field and reports ``solar_kwh`` unchanged.
+    """
+    publication = getattr(interval, "solar_publication_kwh", None)
+    if publication is None:
+        publication = getattr(interval, "solar_kwh", 0.0)
+    return _finite(publication)
+
+
 @dataclass(frozen=True)
 class DailyOperationProjectionRequest:
     """Read-only inputs needed to materialize a Daily Operation projection."""
@@ -200,9 +229,8 @@ def build_daily_operation_projection(
 
     full_forecasts = [
         (
-            _finite(getattr(interval, "solar_kwh", 0.0)) * _full_quarter_factor(interval),
-            _finite(getattr(interval, "consumption_kwh", 0.0))
-            * _full_quarter_factor(interval),
+            _published_solar(interval) * _full_quarter_factor(interval),
+            _published_consumption(interval) * _full_quarter_factor(interval),
         )
         for interval, _remaining_start, _remaining_ratio in remaining_intervals
     ]

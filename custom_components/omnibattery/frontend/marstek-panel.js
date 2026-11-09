@@ -2985,11 +2985,11 @@ class MarstekVenusPanel extends HTMLElement {
     const forecastSocBase = pickOperation(["planned_soc_pct", "soc_end_pct", "stored_soc_end_pct"]);
     const actualSolar = this._dailyOperationExtendedArray(actualSolarBase, [], []);
     const forecastSolar = this._dailyOperationExtendedArray(
-      forecastSolarBase, extension, ["solar_kwh", "solar_forecast_kwh"]
+      forecastSolarBase, extension, ["solar_forecast_kwh", "solar_kwh"]
     );
     const actualConsumption = this._dailyOperationExtendedArray(actualConsumptionBase, [], []);
     const forecastConsumption = this._dailyOperationExtendedArray(
-      forecastConsumptionBase, extension, ["consumption_kwh", "consumption_forecast_kwh"]
+      forecastConsumptionBase, extension, ["consumption_forecast_kwh", "consumption_kwh"]
     );
     const storedActualSoc = this._dailyOperationExtendedArray(storedActualSocBase, [], []);
     const forecastSoc = this._dailyOperationExtendedArray(
