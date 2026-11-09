@@ -39,20 +39,6 @@ const DAILY_OPERATION_DEFAULT_EXTENSION_INTERVALS = 48;
 const DAILY_OPERATION_TOTAL_INTERVALS = DAILY_OPERATION_BASE_INTERVALS + DAILY_OPERATION_EXTENSION_INTERVALS;
 const DAILY_OPERATION_TOTAL_HOURS = DAILY_OPERATION_TOTAL_INTERVALS / 4;
 const DAILY_OPERATION_CONTEXT_HOURLY_BALANCE = 32;
-// Price strip under the day chart: 100 units tall, bars between 8 and 92 so the
-// max/min labels of its own axis line up with the drawn band. The band is tall
-// on purpose: its y-axis runs from the lowest to the highest price of the shown
-// quarters, so a day between 44 and 66 ct keeps a visible spread instead of
-// collapsing into a third of a zero-based axis.
-const DAILY_OPERATION_PRICE_STRIP_HEIGHT = 100;
-const DAILY_OPERATION_PRICE_TOP = 8;
-const DAILY_OPERATION_PRICE_BOTTOM = 92;
-// The four fills a price bar can carry: one per action of the day chart plus the
-// neutral grey for a quarter the planner leaves alone. The classes exist so the
-// stylesheet reuses the chart's own colour variables instead of a new palette.
-const DAILY_OPERATION_PRICE_ACTION_CLASSES = [
-  "daily-op-price-solar", "daily-op-price-grid", "daily-op-price-discharge", "daily-op-price-neutral",
-];
 // Covered zero PV intervals (the open cell plus three completed quarters, so
 // ~45-60 minutes) before the remaining solar forecast is treated as
 // post-sunset and removed.
@@ -85,7 +71,7 @@ const I18N = {
     dailyOperationSolarWindow: "Solar window", dailyOperationSolarCharge: "Solar charge", dailyOperationGridCharge: "Grid charge", dailyOperationDischarge: "Battery discharge", dailyOperationEnergyToBattery: "Energy to battery", dailyOperationEnergyFromBattery: "Energy from battery", dailyOperationCause: "Cause", dailyOperationHourlyBalance: "Hourly net balance",
     dailyOperationNotNeeded: "Grid charge not needed", dailyOperationNoAction: "No action", dailyOperationSetpoint: "Until setpoint",
     dailyOperationDelay: "Charge delayed", dailyOperationUnlock: "Estimated unlock: {time}", dailyOperationAxis: "kWh/15 min",
-    dailyOperationSolar: "Solar", dailyOperationConsumption: "Consumption", dailyOperationSoc: "Total SOC", dailyOperationPrice: "Grid price", dailyOperationPriceAction: "Price · colour = action", dailyOperationLearned: "Learned profile",
+    dailyOperationSolar: "Solar", dailyOperationConsumption: "Consumption", dailyOperationSoc: "Total SOC", dailyOperationPrice: "Grid price", dailyOperationLearned: "Learned profile",
     dailyOperationSinusoidal: "Sinusoidal fallback", dailyOperationGenericFallback: "Fallback estimate", dailyOperationZeroFallback: "Zero-solar fallback", dailyOperationFallback: "Fallback: {reason}", dailyOperationPlan: "Plan",
     dailyOperationObserved: "Observed", dailyOperationProjected: "Projected", dailyOperationPrevious: "Previous",
     dailyOperationNext: "Next", dailyOperationNow: "Now", dailyOperationCoverage: "Coverage", dailyOperationMode: "Mode",
@@ -176,7 +162,7 @@ const I18N = {
     dailyOperationSolarWindow: "Ventana solar", dailyOperationSolarCharge: "Carga solar", dailyOperationGridCharge: "Carga de red", dailyOperationDischarge: "Descarga de batería", dailyOperationEnergyToBattery: "Energía a batería", dailyOperationEnergyFromBattery: "Energía desde batería", dailyOperationCause: "Causa", dailyOperationHourlyBalance: "Balance neto horario",
     dailyOperationNotNeeded: "Carga de red no necesaria", dailyOperationNoAction: "Sin acción", dailyOperationSetpoint: "Hasta el setpoint",
     dailyOperationDelay: "Carga retrasada", dailyOperationUnlock: "Desbloqueo estimado: {time}", dailyOperationAxis: "kWh/15 min",
-    dailyOperationSolar: "Solar", dailyOperationConsumption: "Consumo", dailyOperationSoc: "SOC total", dailyOperationPrice: "Precio de red", dailyOperationPriceAction: "Precio · color = acción", dailyOperationLearned: "Perfil aprendido",
+    dailyOperationSolar: "Solar", dailyOperationConsumption: "Consumo", dailyOperationSoc: "SOC total", dailyOperationPrice: "Precio de red", dailyOperationLearned: "Perfil aprendido",
     dailyOperationSinusoidal: "Curva sinusoidal alternativa", dailyOperationGenericFallback: "Estimación alternativa", dailyOperationZeroFallback: "Previsión solar nula", dailyOperationFallback: "Estimación alternativa: {reason}", dailyOperationPlan: "Plan",
     dailyOperationObserved: "Observado", dailyOperationProjected: "Previsto", dailyOperationPrevious: "Anterior",
     dailyOperationNext: "Siguiente", dailyOperationNow: "Ahora", dailyOperationCoverage: "Cobertura", dailyOperationMode: "Modo",
@@ -268,7 +254,7 @@ const I18N = {
     dailyOperationSolarWindow: "Finestra solar", dailyOperationSolarCharge: "Càrrega solar", dailyOperationGridCharge: "Càrrega de xarxa", dailyOperationDischarge: "Descàrrega de bateria", dailyOperationEnergyToBattery: "Energia a la bateria", dailyOperationEnergyFromBattery: "Energia des de la bateria", dailyOperationCause: "Causa", dailyOperationHourlyBalance: "Balanç net horari",
     dailyOperationNotNeeded: "Càrrega de xarxa no necessària", dailyOperationNoAction: "Sense acció", dailyOperationSetpoint: "Fins al setpoint",
     dailyOperationDelay: "Càrrega retardada", dailyOperationUnlock: "Desbloqueig estimat: {time}", dailyOperationAxis: "kWh/15 min",
-    dailyOperationSolar: "Solar", dailyOperationConsumption: "Consum", dailyOperationSoc: "SOC total", dailyOperationPrice: "Preu de xarxa", dailyOperationPriceAction: "Preu · color = acció", dailyOperationLearned: "Perfil après",
+    dailyOperationSolar: "Solar", dailyOperationConsumption: "Consum", dailyOperationSoc: "SOC total", dailyOperationPrice: "Preu de xarxa", dailyOperationLearned: "Perfil après",
     dailyOperationSinusoidal: "Corba sinusoidal alternativa", dailyOperationGenericFallback: "Estimació alternativa", dailyOperationZeroFallback: "Previsió solar nul·la", dailyOperationFallback: "Estimació alternativa: {reason}", dailyOperationPlan: "Pla",
     dailyOperationObserved: "Observat", dailyOperationProjected: "Previst", dailyOperationPrevious: "Anterior",
     dailyOperationNext: "Següent", dailyOperationNow: "Ara", dailyOperationCoverage: "Cobertura", dailyOperationMode: "Mode",
@@ -355,7 +341,7 @@ const I18N = {
     dailyOperationSolarWindow: "Solarfenster", dailyOperationSolarCharge: "Solarladung", dailyOperationGridCharge: "Netzladung", dailyOperationDischarge: "Batterieentladung", dailyOperationEnergyToBattery: "Energie zur Batterie", dailyOperationEnergyFromBattery: "Energie aus der Batterie", dailyOperationCause: "Ursache", dailyOperationHourlyBalance: "Stündlicher Netzausgleich",
     dailyOperationNotNeeded: "Keine Netzladung erforderlich", dailyOperationNoAction: "Keine Aktion", dailyOperationSetpoint: "Bis zum Sollwert",
     dailyOperationDelay: "Laden verzögert", dailyOperationUnlock: "Voraussichtliche Freigabe: {time}", dailyOperationAxis: "kWh/15 Min.",
-    dailyOperationSolar: "Solar", dailyOperationConsumption: "Verbrauch", dailyOperationSoc: "Gesamt-SOC", dailyOperationPrice: "Netzpreis", dailyOperationPriceAction: "Preis · Farbe = Aktion", dailyOperationLearned: "Gelerntes Profil",
+    dailyOperationSolar: "Solar", dailyOperationConsumption: "Verbrauch", dailyOperationSoc: "Gesamt-SOC", dailyOperationPrice: "Netzpreis", dailyOperationLearned: "Gelerntes Profil",
     dailyOperationSinusoidal: "Sinusförmige Ersatzkurve", dailyOperationGenericFallback: "Ersatzprognose", dailyOperationZeroFallback: "Solarprognose ohne Ertrag", dailyOperationFallback: "Ersatzprognose: {reason}", dailyOperationPlan: "Plan",
     dailyOperationObserved: "Beobachtet", dailyOperationProjected: "Prognostiziert", dailyOperationPrevious: "Zurück",
     dailyOperationNext: "Weiter", dailyOperationNow: "Jetzt", dailyOperationCoverage: "Abdeckung", dailyOperationMode: "Modus",
@@ -442,7 +428,7 @@ const I18N = {
     dailyOperationSolarWindow: "Fenêtre solaire", dailyOperationSolarCharge: "Charge solaire", dailyOperationGridCharge: "Charge réseau", dailyOperationDischarge: "Décharge batterie", dailyOperationEnergyToBattery: "Énergie vers la batterie", dailyOperationEnergyFromBattery: "Énergie depuis la batterie", dailyOperationCause: "Cause", dailyOperationHourlyBalance: "Bilan net horaire",
     dailyOperationNotNeeded: "Charge réseau non nécessaire", dailyOperationNoAction: "Aucune action", dailyOperationSetpoint: "Jusqu'au point de consigne",
     dailyOperationDelay: "Charge retardée", dailyOperationUnlock: "Déblocage estimé : {time}", dailyOperationAxis: "kWh/15 min",
-    dailyOperationSolar: "Solaire", dailyOperationConsumption: "Consommation", dailyOperationSoc: "SOC total", dailyOperationPrice: "Prix du réseau", dailyOperationPriceAction: "Prix · couleur = action", dailyOperationLearned: "Profil appris",
+    dailyOperationSolar: "Solaire", dailyOperationConsumption: "Consommation", dailyOperationSoc: "SOC total", dailyOperationPrice: "Prix du réseau", dailyOperationLearned: "Profil appris",
     dailyOperationSinusoidal: "Courbe sinusoïdale de secours", dailyOperationGenericFallback: "Estimation de secours", dailyOperationZeroFallback: "Prévision solaire nulle", dailyOperationFallback: "Estimation de secours : {reason}", dailyOperationPlan: "Plan",
     dailyOperationObserved: "Observé", dailyOperationProjected: "Prévu", dailyOperationPrevious: "Précédent",
     dailyOperationNext: "Suivant", dailyOperationNow: "Maintenant", dailyOperationCoverage: "Couverture", dailyOperationMode: "Mode",
@@ -529,7 +515,7 @@ const I18N = {
     dailyOperationSolarWindow: "Zonnevenster", dailyOperationSolarCharge: "Laden met zonne-energie", dailyOperationGridCharge: "Laden vanaf net", dailyOperationDischarge: "Batterij ontladen", dailyOperationEnergyToBattery: "Energie naar batterij", dailyOperationEnergyFromBattery: "Energie uit batterij", dailyOperationCause: "Oorzaak", dailyOperationHourlyBalance: "Uurbalans",
     dailyOperationNotNeeded: "Laden vanaf net niet nodig", dailyOperationNoAction: "Geen actie", dailyOperationSetpoint: "Tot setpoint",
     dailyOperationDelay: "Laden vertraagd", dailyOperationUnlock: "Geschatte vrijgave: {time}", dailyOperationAxis: "kWh/15 min",
-    dailyOperationSolar: "Zon", dailyOperationConsumption: "Verbruik", dailyOperationSoc: "Totale SOC", dailyOperationPrice: "Netprijs", dailyOperationPriceAction: "Prijs · kleur = actie", dailyOperationLearned: "Geleerd profiel",
+    dailyOperationSolar: "Zon", dailyOperationConsumption: "Verbruik", dailyOperationSoc: "Totale SOC", dailyOperationPrice: "Netprijs", dailyOperationLearned: "Geleerd profiel",
     dailyOperationSinusoidal: "Alternatieve sinuscurve", dailyOperationGenericFallback: "Alternatieve prognose", dailyOperationZeroFallback: "Zonneprognose zonder opbrengst", dailyOperationFallback: "Alternatieve prognose: {reason}", dailyOperationPlan: "Plan",
     dailyOperationObserved: "Geobserveerd", dailyOperationProjected: "Verwacht", dailyOperationPrevious: "Vorige",
     dailyOperationNext: "Volgende", dailyOperationNow: "Nu", dailyOperationCoverage: "Dekking", dailyOperationMode: "Modus",
@@ -2638,11 +2624,7 @@ class MarstekVenusPanel extends HTMLElement {
       `<span class="daily-op-legend-item"><i class="daily-op-line daily-op-line-solar"></i>${this._t("dailyOperationSolar")}</span>` +
       `<span class="daily-op-legend-item"><i class="daily-op-line daily-op-line-consumption"></i>${this._t("dailyOperationConsumption")}</span>` +
       `<span class="daily-op-legend-item"><i class="daily-op-line daily-op-line-soc"></i>${this._t("dailyOperationSoc")}</span>` +
-      `<span class="daily-op-legend-item daily-op-legend-price" hidden><i class="daily-op-line daily-op-line-price"></i><span class="daily-op-legend-price-text"></span></span>` +
-      // The strip below the chart carries one bar per quarter, coloured by the
-      // action the planner gave that quarter. It is always rendered, so its
-      // legend entry needs no hiding flag of its own.
-      `<span class="daily-op-legend-item"><i class="daily-op-swatch daily-op-swatch-price"></i>${this._t("dailyOperationPriceAction")}</span>`;
+      `<span class="daily-op-legend-item daily-op-legend-price" hidden><i class="daily-op-line daily-op-line-price"></i><span class="daily-op-legend-price-text"></span></span>`;
     toolbar.appendChild(legend);
 
     const nav = document.createElement("div");
@@ -2685,21 +2667,17 @@ class MarstekVenusPanel extends HTMLElement {
     viewport.setAttribute("aria-label", this._t("dailyOperationTitle"));
     const stage = document.createElement("div");
     stage.className = "daily-op-stage";
-    // One horizontal scale for the whole scrolled stage: the day chart and the
-    // price strip below it use this same viewBox width, so quarter N of the
-    // strip always sits under quarter N of the chart.
-    const chartWidth = DAILY_OPERATION_TOTAL_INTERVALS * 10;
 
     const uid = `mv-daily-op-${(this._dailyOpUid = (this._dailyOpUid || 0) + 1)}`;
 
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.classList.add("daily-op-svg");
-    svg.setAttribute("viewBox", `0 0 ${chartWidth} 190`);
+    svg.setAttribute("viewBox", `0 0 ${DAILY_OPERATION_TOTAL_INTERVALS * 10} 190`);
     svg.setAttribute("preserveAspectRatio", "none");
     svg.setAttribute("aria-hidden", "true");
     svg.innerHTML =
       `<g class="daily-op-grid-lines">` +
-      Array.from({ length: 6 }, (_, i) => `<line x1="0" y1="${32 + i * 26.4}" x2="${chartWidth}" y2="${32 + i * 26.4}"/>`).join("") +
+      Array.from({ length: 6 }, (_, i) => `<line x1="0" y1="${32 + i * 26.4}" x2="${DAILY_OPERATION_TOTAL_INTERVALS * 10}" y2="${32 + i * 26.4}"/>`).join("") +
       Array.from({ length: DAILY_OPERATION_TOTAL_HOURS + 1 }, (_, i) => `<line class="daily-op-hour-line" x1="${i * 40}" y1="24" x2="${i * 40}" y2="170"/>`).join("") +
       `</g>` +
       `<path class="daily-op-path daily-op-path-solar-actual" fill="none"></path>` +
@@ -2710,45 +2688,6 @@ class MarstekVenusPanel extends HTMLElement {
       `<path class="daily-op-path daily-op-path-soc-forecast" fill="none"></path>` +
       `<path class="daily-op-path daily-op-path-price" fill="none"></path>`;
     stage.appendChild(svg);
-
-    // Price strip: a tall band directly under the day chart and inside the
-    // same scrolling stage. It shares the horizontal scale (and therefore the
-    // viewport's scrollbar) with the quarter cells above, but never the kWh
-    // scale, so a cheap quarter and a charge action can be compared by
-    // position alone. Bars grow from the lowest price of the shown quarters
-    // (see _dailyOperationUpdatePrice) and carry the day chart's own action
-    // colour, so the strip and the cells above it read as one picture. The band
-    // is decorative next to the chart: aria-hidden, no tabstop and no scrollbar
-    // of its own. The quarter cells keep exposing the price in their tooltip
-    // and aria-label.
-    const priceStrip = document.createElement("div");
-    priceStrip.className = "daily-op-price-strip";
-    priceStrip.setAttribute("aria-hidden", "true");
-    const priceSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    priceSvg.classList.add("daily-op-price-svg");
-    priceSvg.setAttribute("viewBox", `0 0 ${chartWidth} ${DAILY_OPERATION_PRICE_STRIP_HEIGHT}`);
-    priceSvg.setAttribute("preserveAspectRatio", "none");
-    priceSvg.setAttribute("aria-hidden", "true");
-    const priceZero = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    priceZero.classList.add("daily-op-price-zero");
-    priceZero.setAttribute("x1", "0");
-    priceZero.setAttribute("x2", String(chartWidth));
-    priceZero.setAttribute("y1", String(DAILY_OPERATION_PRICE_BOTTOM));
-    priceZero.setAttribute("y2", String(DAILY_OPERATION_PRICE_BOTTOM));
-    priceSvg.appendChild(priceZero);
-    const priceBars = [];
-    for (let index = 0; index < DAILY_OPERATION_BASE_INTERVALS; index++) {
-      const bar = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      bar.classList.add("daily-op-price-bar");
-      bar.setAttribute("x", String(index * 10 + 1));
-      bar.setAttribute("width", "8");
-      bar.setAttribute("y", String(DAILY_OPERATION_PRICE_BOTTOM));
-      bar.setAttribute("height", "0");
-      priceSvg.appendChild(bar);
-      priceBars.push(bar);
-    }
-    priceStrip.appendChild(priceSvg);
-    stage.appendChild(priceStrip);
 
     // Keep the current-time marker in HTML so its label has a stable pixel
     // size instead of stretching with the SVG viewBox.
@@ -2862,19 +2801,6 @@ class MarstekVenusPanel extends HTMLElement {
     priceScale.hidden = true;
     priceScale.innerHTML = `<span class="daily-op-price-high"></span><span class="daily-op-price-low"></span>`;
     layout.appendChild(priceScale);
-    // Own axis for the price strip: a separate scale in the left column, exactly
-    // below the kWh axis, so both bands stay readable without sharing a scale.
-    // Its top tick is the day's highest price and its bottom tick the lowest,
-    // never 0. It is rendered even when no quarter has a price yet: an
-    // always-present band with its axis and unit is honest, while a
-    // disappearing band is indistinguishable from a rendering bug.
-    const priceAxis = document.createElement("div");
-    priceAxis.className = "daily-op-price-axis";
-    priceAxis.setAttribute("aria-hidden", "true");
-    priceAxis.innerHTML =
-      `<small class="daily-op-price-unit"></small>` +
-      `<div class="daily-op-price-axis-ticks"><span></span><span></span></div>`;
-    layout.appendChild(priceAxis);
     card.appendChild(layout);
     // The tooltip is positioned against the card, outside the horizontally
     // clipped viewport, so the first and last intervals remain fully visible.
@@ -2905,9 +2831,6 @@ class MarstekVenusPanel extends HTMLElement {
       priceHigh: priceScale.querySelector(".daily-op-price-high"),
       priceLow: priceScale.querySelector(".daily-op-price-low"),
       yAxis, socAxis, viewport, stage, svg, tooltip, previous, next,
-      priceStrip, priceSvg, priceZero, priceBars, priceAxis,
-      priceAxisUnit: priceAxis.querySelector(".daily-op-price-unit"),
-      priceAxisTicks: priceAxis.querySelectorAll(".daily-op-price-axis-ticks span"),
       cells, labels, hours,
       paths: {
         solarActual: svg.querySelector(".daily-op-path-solar-actual"),
@@ -3787,16 +3710,6 @@ class MarstekVenusPanel extends HTMLElement {
           Array.from({ length: hours + 1 }, (_, i) => `<line class="daily-op-hour-line" x1="${i * 40}" y1="24" x2="${i * 40}" y2="170"/>`).join("");
       }
     }
-    if (ref.priceSvg) {
-      // The strip follows the chart's own viewBox, not the constant it was
-      // built with: one x-scale for both bands, so quarter N of the strip stays
-      // under quarter N of the cells above it when the plan reaches further
-      // than the default extension.
-      ref.priceSvg.setAttribute(
-        "viewBox", `0 0 ${total * 10} ${DAILY_OPERATION_PRICE_STRIP_HEIGHT}`
-      );
-      if (ref.priceZero) ref.priceZero.setAttribute("x2", String(total * 10));
-    }
     for (const container of [ref.labels, ref.hours]) {
       if (!container || !container.children) continue;
       Array.from(container.children).forEach((child, hour) => { child.hidden = hour >= hours; });
@@ -4048,99 +3961,6 @@ class MarstekVenusPanel extends HTMLElement {
     const now = (snapshot.currentIndex + snapshot.currentProgress) * 10;
     ref.nowMarker.style.left = `${now / (this._dailyOperationTotalIntervals() * 0.1)}%`;
     ref.nowText.textContent = this._t("dailyOperationNow");
-    this._dailyOperationUpdatePrice(snapshot);
-  }
-
-  // Colour class of one price bar, taken from the planning's per-quarter action
-  // mask (operations.planned_action_mask, the same bits the day chart uses:
-  // 1 = solar charge, 2 = grid charge, 4 = discharge).
-  //
-  // Fixed priority for a quarter with more than one action: a mask is the union
-  // of every transition inside those 15 minutes, so simultaneous bits are
-  // normal. A bar carries one colour, and we follow the ascending bit order that
-  // _dailyOperationActionBits already returns - and therefore the base colour
-  // the cell directly above the bar shows: solar (1) beats grid (2) beats
-  // discharge (4). A quarter the planner leaves alone stays neutral grey.
-  _dailyOperationPriceActionClass(mask) {
-    const bits = this._dailyOperationActionBits(mask);
-    if (!bits.length) return "daily-op-price-neutral";
-    return `daily-op-price-${this._dailyOperationActionKey(bits[0])}`;
-  }
-
-  _dailyOperationUpdatePrice(snapshot) {
-    const ref = this._r.dailyOperation;
-    if (!ref || !Array.isArray(ref.priceBars)) return;
-    const values = Array.isArray(snapshot.price) ? snapshot.price : null;
-    const [visibleStart, visibleEnd] = this._dailyOperationVisibleRange();
-    const visible = [];
-    for (let index = 0; index < DAILY_OPERATION_BASE_INTERVALS; index++) {
-      if (index < visibleStart || index > visibleEnd) continue;
-      const value = values ? this._dailyOperationNumber(values[index]) : null;
-      if (value != null) visible.push(value);
-    }
-    if (!visible.length) {
-      // The band and its axis stay in place; only the bars are empty. Reset
-      // their geometry and their action colour too, so a chart that loses its
-      // prices never keeps bars from the previous snapshot behind a later
-      // re-render.
-      for (const bar of ref.priceBars) {
-        bar.style.display = "none";
-        bar.setAttribute("y", String(DAILY_OPERATION_PRICE_BOTTOM));
-        bar.setAttribute("height", "0");
-        bar.classList.remove("daily-op-price-negative");
-        for (const name of DAILY_OPERATION_PRICE_ACTION_CLASSES) {
-          bar.classList.toggle(name, name === "daily-op-price-neutral");
-        }
-      }
-      ref.priceZero.setAttribute("y1", String(DAILY_OPERATION_PRICE_BOTTOM));
-      ref.priceZero.setAttribute("y2", String(DAILY_OPERATION_PRICE_BOTTOM));
-      if (ref.priceAxisTicks) for (const tick of ref.priceAxisTicks) tick.textContent = "";
-      return;
-    }
-    // The axis spans the prices actually shown, never 0..max: a day between 44
-    // and 66 ct would otherwise use a third of the band and the difference the
-    // user wants to see stays invisible. A negative quarter must remain inside
-    // the axis, so the lower bound is min(0, lowest).
-    const lowest = Math.min(...visible);
-    const low = lowest < 0 ? Math.min(0, lowest) : lowest;
-    const high = Math.max(...visible);
-    const span = high - low > 1e-9 ? high - low : 0.01;
-    const top = DAILY_OPERATION_PRICE_TOP;
-    const bottom = DAILY_OPERATION_PRICE_BOTTOM;
-    const y = (value) => bottom - ((value - low) / span) * (bottom - top);
-    // The zero line is drawn only while 0 is inside the range. Otherwise the
-    // bottom edge is the baseline: every bar grows from the lowest price of the
-    // shown series, which is exactly what the lower axis label names. (A line
-    // below the band would claim a 0 that this scale does not contain.)
-    const zeroInside = low <= 0 && high >= 0;
-    const base = zeroInside ? y(0) : bottom;
-    ref.priceBars.forEach((bar, index) => {
-      const value = values ? this._dailyOperationNumber(values[index]) : null;
-      if (value == null) {
-        bar.style.display = "none";
-        return;
-      }
-      const valueY = y(value);
-      bar.style.display = "";
-      bar.setAttribute("y", Math.min(valueY, base).toFixed(2));
-      bar.setAttribute("height", Math.max(0.6, Math.abs(base - valueY)).toFixed(2));
-      bar.classList.toggle("daily-op-price-negative", value < 0);
-      const action = this._dailyOperationPriceActionClass(
-        this._dailyOperationMaskAt(snapshot.plannedMask, index)
-      );
-      // toggle(name, force) rather than remove/add: the bar's class list stays
-      // declarative in one pass, and the DOM doubles used by the frontend tests
-      // implement toggle only.
-      for (const name of DAILY_OPERATION_PRICE_ACTION_CLASSES) {
-        bar.classList.toggle(name, name === action);
-      }
-    });
-    ref.priceZero.setAttribute("y1", base.toFixed(2));
-    ref.priceZero.setAttribute("y2", base.toFixed(2));
-    if (ref.priceAxisTicks && ref.priceAxisTicks.length === 2) {
-      ref.priceAxisTicks[0].textContent = this._nf(high, 3);
-      ref.priceAxisTicks[1].textContent = this._nf(low, 3);
-    }
   }
 
   _dailyOperationUpdateCell(snapshot, index) {
@@ -4208,26 +4028,6 @@ class MarstekVenusPanel extends HTMLElement {
     }
     ref.card.hidden = false;
     ref.hourlyBalanceLegend.hidden = !snapshot.hourlyBalanceEnabled;
-    // The price band is always rendered, inside the chart's scroll container.
-    // Without a single priced quarter only its bars stay empty; the axis and
-    // its unit keep explaining what the band is. Hiding the whole band made
-    // "no price data" look exactly like "the feature is missing", which is how
-    // the strip disappeared in the field. Guarded so a partially built card
-    // (or a test double) cannot break the patch. The legend of the price line
-    // above stays owned by the price-path update.
-    const stripHasPrice = Array.isArray(snapshot.price)
-      && snapshot.price.some((value) => this._dailyOperationNumber(value) != null);
-    if (ref.priceAxis) ref.priceAxis.hidden = false;
-    if (ref.priceAxisUnit) {
-      // The band always names its unit; the panel derives it from the Home
-      // Assistant currency, so a CHF or SEK tariff is labelled correctly.
-      ref.priceAxisUnit.textContent = this._dailyOperationPriceUnit();
-    }
-    // Kept as a state marker only: no CSS may use it to hide the band, because
-    // the band must stay visible when every quarter is unpriced.
-    if (ref.stage && ref.stage.classList) {
-      ref.stage.classList.toggle("daily-op-has-price", stripHasPrice);
-    }
     const badgeText = `${this._t("dailyOperationReal")} / ${this._t("dailyOperationForecast")}`;
     ref.badge.querySelector("span:last-child").textContent = badgeText;
     ref.badge.classList.toggle("daily-op-badge-stale", snapshot.stale);
@@ -7899,46 +7699,28 @@ class MarstekVenusPanel extends HTMLElement {
       .daily-op-badge-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
       .daily-op-badge-stale { color: oklch(0.82 0.14 75); border-color: oklch(0.82 0.14 75 / .4); background: oklch(0.82 0.14 75 / .1); }
       .daily-op-notice { margin: 0 0 9px; padding: 7px 10px; border: 1px solid oklch(0.82 0.14 75 / .35); border-radius: 9px; color: oklch(0.82 0.14 75); background: oklch(0.82 0.14 75 / .08); font-size: 11px; line-height: 1.4; }
-      .daily-op-layout { position: relative; display: grid; grid-template-columns: 62px minmax(0, 1fr) 42px; grid-template-rows: auto auto; gap: 0; min-width: 0; padding-bottom: 16px; }
+      .daily-op-layout { position: relative; display: grid; grid-template-columns: 62px minmax(0, 1fr) 42px; gap: 0; min-width: 0; }
       .daily-op-price-scale { position: absolute; top: 0; right: 42px; height: 190px; z-index: 2; pointer-events: none; color: var(--daily-op-price); font-size: 9px; line-height: 1; }
       .daily-op-price-scale span { position: absolute; right: 2px; transform: translateY(-50%); padding: 1px 3px; border-radius: 4px; background: var(--bg-1); white-space: nowrap; }
       .daily-op-price-low { top: 156px; }
-      .daily-op-yaxis { grid-area: 1 / 1; position: relative; height: 190px; color: var(--ink-dim); font-size: 10px; line-height: 1; white-space: nowrap; }
+      .daily-op-yaxis { position: relative; height: 190px; color: var(--ink-dim); font-size: 10px; line-height: 1; white-space: nowrap; }
       .daily-op-yaxis small { position: absolute; top: 7px; right: 8px; font-size: 9px; writing-mode: horizontal-tb; transform: none; }
       .daily-op-yaxis-ticks { position: absolute; top: 32px; right: 8px; bottom: 26px; display: flex; flex-direction: column; align-items: flex-end; justify-content: space-between; }
-      .daily-op-soc-axis { grid-area: 1 / 3; position: relative; height: 190px; color: var(--ink-dim); font-size: 10px; line-height: 1; white-space: nowrap; }
+      .daily-op-soc-axis { position: relative; height: 190px; color: var(--ink-dim); font-size: 10px; line-height: 1; white-space: nowrap; }
       .daily-op-soc-axis small { position: absolute; top: 7px; left: 8px; font-size: 9px; }
       .daily-op-soc-axis-ticks { position: absolute; top: 32px; left: 8px; bottom: 26px; display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; }
-      .daily-op-price-axis { grid-area: 2 / 1; position: relative; height: 100px; color: var(--ink-dim); font-size: 9px; line-height: 1; white-space: nowrap; }
-      .daily-op-price-axis small { position: absolute; top: 0; right: 8px; font-size: 9px; color: var(--ink-dim); }
-      .daily-op-price-axis-ticks { position: absolute; top: 9px; right: 8px; bottom: 9px; display: flex; flex-direction: column; align-items: flex-end; justify-content: space-between; font-variant-numeric: tabular-nums; }
-      /* 290px of scrolled content (190px chart + 100px price strip) plus room
-         for the horizontal scrollbar, so the bar always sits *below* the strip
-         instead of clipping its bottom ticks. The layout's bottom padding
-         keeps that overflow inside the card. */
-      .daily-op-viewport { grid-area: 1 / 2 / span 2 / auto; height: 306px; position: relative; min-width: 0; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x proximity; scrollbar-width: thin; overscroll-behavior-x: contain; outline: none; }
+      /* Chart band of 190px: the stage below, its svg and the price line's own
+         scale (.daily-op-price-scale) all use that single height, so the
+         viewport needs none of its own and just takes the row. Both values come
+         from FFunes' own timeline, unchanged in upstream/release/v1.6.0. They
+         are restored here after our own price strip - which had grown the stage
+         to 290px and the viewport to 306px to fit a second band - was removed:
+         FFunes already draws the price as a stepped line inside this band, so a
+         strip below it showed the same price twice. */
+      .daily-op-viewport { position: relative; min-width: 0; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x proximity; scrollbar-width: thin; overscroll-behavior-x: contain; outline: none; }
       .daily-op-viewport:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-line); border-radius: 8px; }
-      .daily-op-stage { position: relative; width: calc(150% * var(--daily-op-hours, 36) / 36); min-width: calc(40px * var(--daily-op-hours, 36)); height: 290px; }
+      .daily-op-stage { position: relative; width: calc(150% * var(--daily-op-hours, 36) / 36); min-width: calc(40px * var(--daily-op-hours, 36)); height: 190px; }
       .daily-op-svg { position: absolute; inset: 0; z-index: 1; display: block; width: 100%; height: 190px; overflow: visible; pointer-events: none; }
-      /* Always rendered: the strip is part of the chart's own scroll content,
-         directly under the 190px chart band. It has no overflow of its own, so
-         it can only ever move with the viewport's single horizontal scrollbar. */
-      .daily-op-price-strip { position: absolute; left: 0; right: 0; top: 190px; z-index: 1; display: block; height: 100px; border-top: 1px dashed var(--line-strong); }
-      .daily-op-price-svg { position: absolute; inset: 0; display: block; width: 100%; height: 100px; overflow: visible; pointer-events: none; }
-      /* Every bar wears the colour of its planned action, taken from the day
-         chart's action tokens above (solar/grid/discharge/not-needed). A
-         sub-zero quarter keeps that action colour and is only flagged in the
-         DOM: a separate fill for "negative" would read as "discharge" now. */
-      .daily-op-price-bar { fill: color-mix(in oklab, var(--daily-op-not-needed) 62%, transparent); }
-      .daily-op-price-bar.daily-op-price-negative { fill: color-mix(in oklab, var(--daily-op-discharge) 62%, transparent); }
-      .daily-op-price-bar.daily-op-price-solar { fill: color-mix(in oklab, var(--daily-op-solar-charge) 62%, transparent); }
-      .daily-op-price-bar.daily-op-price-grid { fill: color-mix(in oklab, var(--daily-op-grid) 62%, transparent); }
-      .daily-op-price-bar.daily-op-price-discharge { fill: color-mix(in oklab, var(--daily-op-discharge) 62%, transparent); }
-      .daily-op-price-bar.daily-op-price-neutral { fill: color-mix(in oklab, var(--daily-op-not-needed) 62%, transparent); }
-      .daily-op-price-zero { stroke: var(--line-strong); stroke-width: 1; vector-effect: non-scaling-stroke; }
-      /* The price swatch shows the four action colours, so the legend explains
-         why two bars of the same band can differ: the colour is the action. */
-      .daily-op-swatch-price { background: linear-gradient(90deg, color-mix(in oklab, var(--daily-op-solar-charge) 62%, transparent) 0 25%, color-mix(in oklab, var(--daily-op-grid) 62%, transparent) 25% 50%, color-mix(in oklab, var(--daily-op-discharge) 62%, transparent) 50% 75%, color-mix(in oklab, var(--daily-op-not-needed) 62%, transparent) 75% 100%); }
       .daily-op-grid-lines line { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
       .daily-op-grid-lines .daily-op-hour-line { stroke: var(--line-strong); }
       .daily-op-path { stroke-width: 2.2; vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round; }
@@ -7950,7 +7732,7 @@ class MarstekVenusPanel extends HTMLElement {
       .daily-op-path-soc-forecast { stroke: var(--daily-op-soc); stroke-dasharray: 5 4; opacity: .82; }
       .daily-op-path-price { stroke: var(--daily-op-price); stroke-width: 1.5; stroke-linecap: butt; stroke-linejoin: miter; opacity: .85; }
       .daily-op-grid { position: absolute; inset: 0; z-index: 2; display: grid; grid-template-rows: 24px 146px 20px; pointer-events: none; }
-      .daily-op-now-marker { position: absolute; z-index: 5; top: 3px; bottom: 120px; width: 0; pointer-events: none; }
+      .daily-op-now-marker { position: absolute; z-index: 5; top: 3px; bottom: 20px; width: 0; pointer-events: none; }
       .daily-op-now-marker::before { content: ""; position: absolute; top: 21px; bottom: 0; left: 0; border-left: 1.5px solid var(--accent); }
       .daily-op-now-marker::after { content: ""; position: absolute; top: 18px; left: -3px; width: 7px; height: 7px; border: 1px solid var(--bg-1); border-radius: 50%; background: var(--accent); }
       .daily-op-now-text { position: absolute; top: 0; left: 0; transform: translateX(-50%); padding: 2px 7px; border: 1px solid var(--accent-line); border-radius: 999px; background: var(--bg-2); color: var(--accent); box-shadow: 0 2px 8px oklch(0 0 0 / .22); font-size: 9px; line-height: 14px; font-weight: 700; letter-spacing: .01em; white-space: nowrap; }
