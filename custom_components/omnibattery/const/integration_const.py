@@ -701,6 +701,19 @@ DEFICIT_REEVAL_MAX_PER_DAY = SOLAR_FORECAST_REEVAL_MAX_PER_DAY
 DEADLINE_VALUE_REEVAL_KWH = 0.2          # Rise in the live shortfall that puts a deadline at risk
 DEADLINE_VALUE_REEVAL_COOLDOWN_MIN = 10  # Minimum minutes between two deadline-driven re-evaluations
 
+# Floor-boundary re-evaluation: the SOC-drop trigger above fires on a drop of
+# ``threshold`` points, and the room that frees per such step is
+# ``threshold % * usable capacity`` (5 % of 10.24 kWh = 0.512 kWh). A battery
+# that stops at its floor before the *next* step is taken therefore never
+# re-plans with the last of that room: a plan made at 16.5 % SOC sizes the night
+# on 8.55 kWh while 9.01 kWh is free. The rule below closes exactly that last
+# step, and only that step: it fires once the battery sits on the floor with the
+# plan made at least one point higher, so a battery resting at the floor cannot
+# re-plan cycle after cycle (every rebuild refreshes the SOC reference, which
+# makes the second firing need another point of drop).
+FLOOR_REEVAL_MIN_DROP_SOC = 1.0   # Plan must have been made this many points above the floor
+FLOOR_REEVAL_TOLERANCE_SOC = 0.5  # How close to the floor counts as "on the floor"
+
 # Weekday mapping (mon=0, sun=6, matches datetime.weekday())
 WEEKDAY_MAP = {
     "mon": 0, "tue": 1, "wed": 2, "thu": 3,
