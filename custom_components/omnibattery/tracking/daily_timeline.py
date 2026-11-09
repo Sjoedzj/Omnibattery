@@ -3128,6 +3128,24 @@ class DailyOperationTimelineManager:
             )
             for index in range(INTERVAL_COUNT)
         ]
+        # History is not a plan. A quarter that has passed, or that the clock
+        # already closed, reports what was measured - and ``None`` where the
+        # diary has no measurement - because publishing the projection there
+        # describes planning as something that happened, which is exactly what
+        # makes the chart lie. Only the quarters still open (the running one and
+        # the ones ahead) keep their planned values.
+        def is_history(index: int) -> bool:
+            return index < self._current_index or self._closed[index]
+
+        def visible_value(index: int, measured, planned):
+            if is_history(index):
+                return measured
+            if index > self._current_index:
+                return planned
+            # The quarter still running keeps the meaning it already had: the
+            # measurement when there is one, otherwise the plan it works towards.
+            return measured if measured is not None else planned
+
         actual_grid: list[str] = []
         planned_grid: list[str] = []
         visible_grid: list[str] = []
@@ -3135,16 +3153,22 @@ class DailyOperationTimelineManager:
         for index, cell in enumerate(self._cells):
             actual_grid.append(cell.actual_grid_charge_decision)
             planned_grid.append(cell.planned_grid_charge_decision)
-            visible_grid.append(
-                cell.actual_grid_charge_decision
-                if index <= self._current_index and cell.actual_grid_charge_decision
-                != GRID_CHARGE_NOT_APPLICABLE
-                else cell.planned_grid_charge_decision
-            )
+            # Same rule, but "not applicable" is this series' way of saying
+            # "nothing recorded". History reports the decision as it was
+            # recorded; the running quarter keeps falling back to its plan.
+            if is_history(index):
+                visible_grid.append(cell.actual_grid_charge_decision)
+            elif (
+                index <= self._current_index
+                and cell.actual_grid_charge_decision != GRID_CHARGE_NOT_APPLICABLE
+            ):
+                visible_grid.append(cell.actual_grid_charge_decision)
+            else:
+                visible_grid.append(cell.planned_grid_charge_decision)
             delay_until.append(
-                cell.actual_delay_until
-                if index <= self._current_index and cell.actual_delay_until is not None
-                else cell.planned_delay_until
+                visible_value(
+                    index, cell.actual_delay_until, cell.planned_delay_until
+                )
             )
 
         grid = [_wall_interval_info(self._local_date, index, self._timezone()) for index in range(INTERVAL_COUNT)]
@@ -3242,16 +3266,18 @@ class DailyOperationTimelineManager:
                 or cell.planned_coexistence_mask.bit_count() >= 3
             ),
         }
+        # The measured power of a quarter that has started; only the quarters
+        # still ahead keep the planned power.
         visible_charge_power = [
-            cell.actual_charge_power_w
-            if index <= self._current_index and cell.actual_charge_power_w is not None
-            else cell.planned_charge_power_w
+            visible_value(
+                index, cell.actual_charge_power_w, cell.planned_charge_power_w
+            )
             for index, cell in enumerate(self._cells)
         ]
         visible_discharge_power = [
-            cell.actual_discharge_power_w
-            if index <= self._current_index and cell.actual_discharge_power_w is not None
-            else cell.planned_discharge_power_w
+            visible_value(
+                index, cell.actual_discharge_power_w, cell.planned_discharge_power_w
+            )
             for index, cell in enumerate(self._cells)
         ]
         planned_charge_to_battery = [
@@ -3287,6 +3313,29 @@ class DailyOperationTimelineManager:
             else planned_soc_pct[index]
             for index in range(INTERVAL_COUNT)
         ]
+
+        # The five source/destination flows have no measured counterpart: the
+        # diary only samples the aggregate charge and discharge energy, so there
+        # is nothing to fall back on once a quarter is over. A closed or
+        # already-passed quarter therefore reports "unknown" instead of
+        # publishing its projection as if it had been observed, while the
+        # current and future quarters keep the planned flow. The cell itself is
+        # left untouched, so freezing, restore and the projection signature are
+        # unaffected. (Ported from fix/1.6-display ab8ca33d.)
+        def visible_flow(attribute: str) -> list[float | None]:
+            return [
+                None if is_history(index) else getattr(cell, attribute)
+                for index, cell in enumerate(self._cells)
+            ]
+
+        # Stored energy has no measured counterpart either - the diary samples
+        # SOC, not kWh - so a passed quarter reports unknown rather than the
+        # plan. soc_end_pct does have one: the SOC measured in that quarter.
+        visible_soc_end = [
+            cell.actual_soc_pct if is_history(index) else cell.planned_soc_end_pct
+            for index, cell in enumerate(self._cells)
+        ]
+
         payload = {
             "schema_version": DAILY_TIMELINE_SCHEMA_VERSION,
             "local_date": self._local_date.isoformat(),
@@ -3352,13 +3401,13 @@ class DailyOperationTimelineManager:
                 "soc_pct": visible_soc_pct,
                 "actual_soc_pct": actual_soc_pct,
                 "planned_soc_pct": planned_soc_pct,
-                "solar_to_battery_kwh": [cell.planned_solar_to_battery_kwh for cell in self._cells],
-                "grid_to_battery_kwh": [cell.planned_grid_to_battery_kwh for cell in self._cells],
-                "battery_to_home_kwh": [cell.planned_battery_to_home_kwh for cell in self._cells],
-                "grid_to_home_kwh": [cell.planned_grid_to_home_kwh for cell in self._cells],
-                "solar_to_home_kwh": [cell.planned_solar_to_home_kwh for cell in self._cells],
-                "stored_energy_end_kwh": [cell.planned_stored_energy_end_kwh for cell in self._cells],
-                "soc_end_pct": [cell.planned_soc_end_pct for cell in self._cells],
+                "solar_to_battery_kwh": visible_flow("planned_solar_to_battery_kwh"),
+                "grid_to_battery_kwh": visible_flow("planned_grid_to_battery_kwh"),
+                "battery_to_home_kwh": visible_flow("planned_battery_to_home_kwh"),
+                "grid_to_home_kwh": visible_flow("planned_grid_to_home_kwh"),
+                "solar_to_home_kwh": visible_flow("planned_solar_to_home_kwh"),
+                "stored_energy_end_kwh": visible_flow("planned_stored_energy_end_kwh"),
+                "soc_end_pct": visible_soc_end,
                 "observed_seconds_by_action": observed_totals,
                 "observed_seconds_by_action_by_interval": action_durations,
                 "actual_source": [cell.actual_source for cell in self._cells],

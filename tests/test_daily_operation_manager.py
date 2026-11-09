@@ -1350,3 +1350,171 @@ async def test_charge_delay_metadata_is_throttled_and_keeps_its_tail_keys():
     manager.update_runtime_metadata(stale=True)
     assert manager.last_notification_immediate is True
     await manager.async_save_all()
+
+
+# ----------------------------------------------------------------------
+# The chart is the judge: a passed quarter shows what was measured, never
+# the plan. Only the running and future quarters keep their projection.
+# ----------------------------------------------------------------------
+
+FLOW_PLAN_FIELDS = {
+    "solar_to_battery_kwh": "planned_solar_to_battery_kwh",
+    "grid_to_battery_kwh": "planned_grid_to_battery_kwh",
+    "battery_to_home_kwh": "planned_battery_to_home_kwh",
+    "grid_to_home_kwh": "planned_grid_to_home_kwh",
+    "solar_to_home_kwh": "planned_solar_to_home_kwh",
+}
+PLANNED_FLOWS = {
+    "solar_to_battery_kwh": 0.2,
+    "grid_to_battery_kwh": 0.1,
+    "battery_to_home_kwh": 0.4,
+    "grid_to_home_kwh": 0.3,
+    "solar_to_home_kwh": 0.05,
+}
+PLANNED_SOC_END_PCT = 45.0
+PLANNED_STORED_END_KWH = 4.5
+PLANNED_CHARGE_W = 3000.0
+PLANNED_DISCHARGE_W = 2500.0
+PLANNED_DELAY_UNTIL = "2026-08-23T10:15:00+02:00"
+
+
+def _plan_one_quarter(manager, index: int = 40):
+    """Give one cell a complete projection, the way a rebuild would."""
+    cell = manager._cells[index]
+    for key, value in PLANNED_FLOWS.items():
+        setattr(cell, FLOW_PLAN_FIELDS[key], value)
+    cell.planned_stored_energy_end_kwh = PLANNED_STORED_END_KWH
+    cell.planned_soc_end_pct = PLANNED_SOC_END_PCT
+    cell.planned_charge_power_w = PLANNED_CHARGE_W
+    cell.planned_discharge_power_w = PLANNED_DISCHARGE_W
+    cell.planned_grid_charge_decision = GRID_CHARGE_SCHEDULED
+    cell.planned_delay_until = PLANNED_DELAY_UNTIL
+    return cell
+
+
+def _manager_with_planned_quarter():
+    clock = MutableClock(datetime(2026, 8, 23, 10, 7, tzinfo=MADRID))
+    manager = _manager(clock)
+    manager.rebuild_future_projection(
+        [
+            {
+                "index": 40,
+                "action_mask": ACTION_SOLAR_CHARGE | ACTION_GRID_CHARGE,
+                **PLANNED_FLOWS,
+            }
+        ],
+        mode="dynamic_pricing",
+    )
+    _plan_one_quarter(manager)
+    return clock, manager
+
+
+def _closed_quarter_manager():
+    """The same plan, one minute after the clock closed that quarter."""
+    clock, manager = _manager_with_planned_quarter()
+    assert manager.build_public_snapshot()["operations"]["closed"][40] is False
+    clock.value = datetime(2026, 8, 23, 10, 16, tzinfo=MADRID)
+    manager.rebuild_future_projection([], mode="dynamic_pricing")
+    snapshot = manager.build_public_snapshot()
+    assert snapshot["operations"]["closed"][40] is True
+    return manager
+
+
+def test_the_running_quarter_keeps_its_whole_plan():
+    _clock, manager = _manager_with_planned_quarter()
+    operations = manager.build_public_snapshot()["operations"]
+
+    assert operations["closed"][40] is False
+    for key, value in PLANNED_FLOWS.items():
+        assert operations[key][40] == pytest.approx(value)
+    assert operations["stored_energy_end_kwh"][40] == pytest.approx(PLANNED_STORED_END_KWH)
+    assert operations["soc_end_pct"][40] == pytest.approx(PLANNED_SOC_END_PCT)
+    assert operations["charge_power_w"][40] == pytest.approx(PLANNED_CHARGE_W)
+    assert operations["discharge_power_w"][40] == pytest.approx(PLANNED_DISCHARGE_W)
+    assert operations["grid_charge_decision"][40] == GRID_CHARGE_SCHEDULED
+    assert operations["delay_until"][40] == PLANNED_DELAY_UNTIL
+
+
+def test_a_passed_quarter_never_publishes_the_plan_as_history():
+    """The five flows and the stored energy have no measured counterpart.
+
+    The diary samples only the aggregate charge/discharge energy and SOC, so for
+    these series a passed quarter has nothing to fall back on: it reports
+    "unknown" instead of replaying its projection as the day's truth.
+    """
+    manager = _closed_quarter_manager()
+    operations = manager.build_public_snapshot()["operations"]
+
+    for key in FLOW_PLAN_FIELDS:
+        assert operations[key][40] is None
+    assert operations["stored_energy_end_kwh"][40] is None
+
+
+def test_a_passed_quarter_without_a_measurement_reports_unknown():
+    """Where a measured counterpart exists but is missing: unknown, not the plan."""
+    manager = _closed_quarter_manager()
+    cell = manager._cells[40]
+
+    operations = manager.build_public_snapshot()["operations"]
+    assert cell.actual_soc_pct is None
+    assert operations["soc_end_pct"][40] is None
+    assert operations["charge_power_w"][40] is None
+    assert operations["discharge_power_w"][40] is None
+    assert operations["grid_charge_decision"][40] == cell.actual_grid_charge_decision
+    assert operations["grid_charge_decision"][40] != GRID_CHARGE_SCHEDULED
+    assert operations["delay_until"][40] is None
+
+
+def test_a_passed_quarter_reports_its_measurements_instead_of_the_plan():
+    """The SOC and power really were measured; history must show those."""
+    clock, manager = _manager_with_planned_quarter()
+    cell = manager._cells[40]
+    cell.actual_soc_pct = 37.5
+    cell.actual_charge_power_w = 1200.0
+    cell.actual_discharge_power_w = 800.0
+
+    clock.value = datetime(2026, 8, 23, 10, 16, tzinfo=MADRID)
+    manager.rebuild_future_projection([], mode="dynamic_pricing")
+    operations = manager.build_public_snapshot()["operations"]
+
+    assert operations["closed"][40] is True
+    assert operations["soc_end_pct"][40] == pytest.approx(37.5)
+    assert operations["charge_power_w"][40] == pytest.approx(1200.0)
+    assert operations["discharge_power_w"][40] == pytest.approx(800.0)
+    # The plan it was working towards is not what it did.
+    assert operations["soc_end_pct"][40] != pytest.approx(PLANNED_SOC_END_PCT)
+    assert operations["charge_power_w"][40] != pytest.approx(PLANNED_CHARGE_W)
+
+
+def test_publishing_history_leaves_the_frozen_plan_untouched():
+    """Only the published view changes; the cell keeps the plan it froze."""
+    manager = _closed_quarter_manager()
+    snapshot = manager.build_public_snapshot()
+
+    stored = manager._store_payload()["cells"][40]
+    for key, value in PLANNED_FLOWS.items():
+        assert stored[FLOW_PLAN_FIELDS[key]] == pytest.approx(value)
+    assert stored["planned_stored_energy_end_kwh"] == pytest.approx(PLANNED_STORED_END_KWH)
+    assert stored["planned_soc_end_pct"] == pytest.approx(PLANNED_SOC_END_PCT)
+    # The plan is still published as a plan; only the "what happened" series
+    # stopped borrowing it.
+    operations = snapshot["operations"]
+    assert operations["planned_soc_pct"][40] == pytest.approx(PLANNED_SOC_END_PCT)
+    assert operations["planned_grid_charge_decision"][40] == GRID_CHARGE_SCHEDULED
+
+
+def test_the_future_quarters_keep_their_planned_flows():
+    _clock, manager = _manager_with_planned_quarter()
+    future = manager._cells[41]
+    future.planned_solar_to_battery_kwh = 0.9
+    future.planned_soc_end_pct = 61.0
+
+    operations = manager.build_public_snapshot()["operations"]
+
+    assert operations["closed"][41] is False
+    assert operations["solar_to_battery_kwh"][41] == pytest.approx(0.9)
+    assert operations["soc_end_pct"][41] == pytest.approx(61.0)
+    # An elapsed quarter is never given an invented plan either.
+    for key in FLOW_PLAN_FIELDS:
+        assert operations[key][39] is None
+    assert operations["stored_energy_end_kwh"][39] is None
