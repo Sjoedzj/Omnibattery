@@ -184,6 +184,25 @@ def _max_charge_power_str(
     return f"{min(limits):g}W (" + ", ".join(parts) + ")"
 
 
+def _allocated_grid_charge(decision_data: dict):
+    """Energy the plan really allocates, or ``None`` when it was not published.
+
+    ``planned_grid_charge_kwh`` is the *need* the energy balance stated. The
+    chronological plan can allocate less — or nothing — because #662 leaves
+    deadline energy to the grid as cheaper to import when it is used, or because
+    the grid carries the house load while a slot charges (#785). Reporting the
+    need as the planned charge made a plan that buys nothing read as a 6.71 kWh
+    charge, so the allocated figure wins wherever it is published.
+    """
+    allocated = decision_data.get("planned_grid_charge_allocated_kwh")
+    if allocated is None:
+        return None
+    try:
+        return float(allocated)
+    except (TypeError, ValueError):
+        return None
+
+
 def format_predictive_notification_message(
     decision_data: dict,
     is_daily_evaluation: bool = False,
@@ -299,11 +318,28 @@ def format_predictive_notification_message(
         # from the actual grid target when a grid-charge margin is configured.
         # Solar surplus is a whole-day energy-balance estimate, not a promise
         # that the remainder of today's battery headroom will be solar-charged.
-        charge_split_line = (
-            f"🔌 Planned grid charge: {planned_grid_charge:.2f} kWh\n"
+        allocated = _allocated_grid_charge(decision_data)
+        solar_line = (
             f"☀️ Forecast {'remaining ' if context['is_remaining'] else ''}solar surplus: "
             f"{solar_surplus:.2f} kWh (after expected consumption)\n"
         )
+        if allocated is not None and allocated < planned_grid_charge - 0.005:
+            # The plan stores less than the balance needs: deadline energy #662
+            # valued below its own import cost, or the load the grid carries
+            # while a slot charges (#785). Naming both numbers is the honest
+            # reading; showing the need alone claimed a charge that will not
+            # happen.
+            charge_split_line = (
+                f"🔌 Planned grid charge: {allocated:.2f} kWh\n"
+                f"⚡ Need {planned_grid_charge:.2f} kWh — the rest is not stored "
+                f"ahead of use\n"
+                f"{solar_line}"
+            )
+        else:
+            charge_split_line = (
+                f"🔌 Planned grid charge: {planned_grid_charge:.2f} kWh\n"
+                f"{solar_line}"
+            )
     else:
         charge_split_line = f"⚡ Deficit: {energy_deficit:.2f} kWh\n"
 
@@ -337,6 +373,12 @@ def format_dynamic_pricing_notification(
     solar_forecast = decision_data.get("solar_forecast_kwh")
     energy_deficit = decision_data.get("energy_deficit_kwh", 0)
     planned_grid_charge = decision_data.get("planned_grid_charge_kwh", energy_deficit)
+    # The plan can allocate less than the balance needs (#662 leaves deadline
+    # energy to the grid). What it allocates is what will be charged, so that is
+    # what the message must state when the decision published it.
+    allocated_grid_charge = _allocated_grid_charge(decision_data)
+    if allocated_grid_charge is not None:
+        planned_grid_charge = allocated_grid_charge
     context = _forecast_notification_context(decision_data)
     solar_str = f"{solar_forecast:.2f} kWh" if solar_forecast is not None else "N/A"
     consumption_for_horizon = context["consumption_kwh"]

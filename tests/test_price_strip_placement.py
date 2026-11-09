@@ -19,7 +19,7 @@ from custom_components import omnibattery
 
 COMPONENT = Path(omnibattery.__file__).parent
 MANIFEST = COMPONENT / "manifest.json"
-EXPECTED_VERSION = "1.6.0b10"
+EXPECTED_VERSION = "1.6.0b11"
 
 
 def test_manifest_version_is_bumped_and_has_no_bom():

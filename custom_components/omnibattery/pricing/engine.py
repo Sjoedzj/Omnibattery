@@ -62,6 +62,8 @@ from ..const import (
     DEFICIT_REEVAL_KWH,
     DEFICIT_REEVAL_COOLDOWN_MIN,
     DEFICIT_REEVAL_MAX_PER_DAY,
+    DEADLINE_VALUE_REEVAL_KWH,
+    DEADLINE_VALUE_REEVAL_COOLDOWN_MIN,
     T_START_FALLBACK_HOUR,
     FLOOR_HYSTERESIS_PCT,
     CHARGE_EFFICIENCY,
@@ -108,6 +110,7 @@ from .chronological import (
     EnergyDeadline,
     EnergyInterval,
     build_energy_deadlines,
+    deadline_value_cap,
     evaluate_chronological_request,
     normalize_energy_shape,
 )
@@ -3496,6 +3499,20 @@ class PricingManager:
                 )
             )
             plan = evaluation.plan
+            if not diagnostic_only:
+                # What the plan actually allocates, next to the need the balance
+                # stated. ``planned_grid_charge_kwh`` keeps its meaning (the
+                # scalar requirement, or the plan's own requirement with an
+                # extended horizon); this field is the plan's own allocated sum
+                # — the same battery-side kWh as ``slot_energy_targets_kwh`` — so
+                # a plan that schedules nothing no longer reads as "6.71 kWh
+                # planned" in the notification. The two agree whenever the plan
+                # can place the energy it sized for; the gap is the part #662
+                # left to the grid as cheaper to import when used, or the load
+                # the grid carries while a slot charges (#785).
+                decision_data["planned_grid_charge_allocated_kwh"] = float(
+                    plan.allocated_kwh or 0.0
+                )
             if control_extension and not diagnostic_only:
                 # The scalar balance nets tomorrow's solar against tonight's
                 # gap; publish the need the plan actually found so should_charge,
@@ -5191,6 +5208,151 @@ class PricingManager:
         if current is not None:
             self._controller._dp_last_eval_deficit_kwh = current
 
+    def _deadline_price_slots(self) -> list:
+        """Future price quarters the deadline trigger values a deadline against.
+
+        Today's published quarters through the control horizon, i.e. exactly
+        what ``_parse_price_data`` already hands the planner. Isolated as its own
+        seam because the parser reads the wall clock, while the trigger is given
+        the instant under test. The today-only scope is deliberate: a deadline
+        past the last published quarter is left unpriced by the allocator too,
+        so the trigger treats it the same way and stands down rather than guess
+        a value for energy whose price nobody has published yet.
+        """
+        return self.get_future_price_slots()
+
+    def _cheapest_quarter_before(self, deadline: datetime, slots: Sequence) -> Any:
+        """Cheapest quarter that can still deliver energy before ``deadline``.
+
+        A quarter only serves a deadline when it *ends* at or before it: energy
+        that lands after the deadline is there too late. The last quarter before
+        the deadline therefore still counts, and everything the battery could
+        not have charged in time does not drag the comparison down.
+        """
+        return min(
+            (slot for slot in slots if slot.end <= deadline),
+            key=lambda slot: (slot.price, slot.start),
+            default=None,
+        )
+
+    def _deadline_value_cap(
+        self, deadline: EnergyDeadline, slots: Sequence
+    ) -> float | None:
+        """Import price this deadline may still pay per kWh, or None for no cap.
+
+        The allocator's own #662 rule, asked through the shared helper so the
+        trigger cannot drift from the planner. ``None`` means "served whatever
+        the import costs" — a guaranteed floor, or no arbitrage margin at all —
+        which is not evidence that buying *now* pays, so only a numeric cap
+        counts here. ``cheaper_to_import`` and ``value_cap`` themselves are
+        untouched: this reads what they decided, it does not change it.
+        """
+        margin = getattr(self._controller, "min_arbitrage_margin", None)
+        if not margin or float(margin) <= 0:
+            return None
+        if getattr(self._controller, "predictive_charging_mode", None) != (
+            PREDICTIVE_MODE_DYNAMIC_PRICING
+        ):
+            return None
+        priced_until = max((slot.end for slot in slots), default=None)
+        return deadline_value_cap(
+            deadline,
+            list(slots),
+            import_value_efficiency=effective_round_trip_efficiency(
+                self._controller
+            )[0],
+            import_value_margin=float(margin),
+            priced_until=priced_until,
+        )
+
+    def _deadline_at_risk_worth_serving(self, now: datetime) -> bool:
+        """Whether a deadline is still servable, and buying for it still pays.
+
+        The balance the plan was built on slipped — the live shortfall rose by at
+        least ``DEADLINE_VALUE_REEVAL_KWH`` — and at least one future deadline of
+        that plan is still within reach of a quarter whose price sits *below*
+        that deadline's own ``value_cap``. That is precisely the window in which
+        buying for it is both worthwhile and possible, and it closes on its own:
+        once the peak quarters are the only ones left they cost more than their
+        own cap, so #662 correctly refuses them and no later rebuild can repair
+        the miss.
+        """
+        schedule = getattr(self._controller, "_dynamic_pricing_schedule", None)
+        if schedule is None or not getattr(
+            schedule, "chronological_planning_active", False
+        ):
+            return False
+        deadlines = [
+            deadline
+            for deadline in (getattr(schedule, "energy_deadlines", None) or [])
+            if isinstance(deadline, EnergyDeadline) and deadline.deadline > now
+        ]
+        if not deadlines:
+            return False
+        slots = self._deadline_price_slots()
+        if not slots:
+            return False
+        for deadline in sorted(deadlines, key=lambda item: item.deadline):
+            cap = self._deadline_value_cap(deadline, slots)
+            if cap is None or not math.isfinite(cap):
+                continue
+            cheapest = self._cheapest_quarter_before(deadline.deadline, slots)
+            if cheapest is not None and cheapest.price < cap:
+                return True
+        return False
+
+    def _is_deadline_value_reeval(self, now: datetime) -> bool:
+        """Return True when a deadline can still be rescued profitably.
+
+        The magnitude triggers above answer "how much moved". This one answers
+        the question the user actually asked: a deadline the plan was built to
+        cover is about to go uncovered, and there is still a quarter before it
+        that pays for itself. It fires on a *smaller* move than
+        ``DEFICIT_REEVAL_KWH`` because the profitability test replaces the
+        magnitude test — below the cap of a deadline that is still ahead, buying
+        is right whatever the size of the gap, and above it, waiting is right.
+
+        Deliberately *not* charged to the shared daily budget: that budget of 4
+        can be spent by the forecast and deficit triggers before the one firing
+        that still has a profitable quarter to act on, and a missed deadline is
+        the one thing no later rebuild repairs (see the constants). What bounds
+        this trigger is its own direction and cooldown instead — it only fires
+        on a *rise* in the live shortfall since the last rebuild, and every
+        rebuild moves that reference to the current reading, so the same
+        deterioration cannot fire twice and a jojo needs the shortfall to keep
+        growing on genuinely new information.
+
+        A rebuild can drop the live slot and stop a charge that was sized on the
+        old plan, exactly like the deficit trigger. It therefore reuses that
+        trigger's marker: one running charge may be disturbed by either trigger
+        once, never twice. The cooldown is shared with nothing, so the two
+        cannot shadow each other.
+        """
+        controller = self._controller
+        if now.hour >= 23 or (now.hour == 0 and now.minute <= 5):
+            # The 00:05 evaluation is close enough; don't clash with it.
+            return False
+        reference = getattr(controller, "_dp_last_eval_deficit_kwh", None)
+        live = self._read_deficit_reference_kwh()
+        if reference is None or live is None:
+            return False
+        if (live - reference) < DEADLINE_VALUE_REEVAL_KWH:
+            return False
+        active_slot = getattr(controller, "_active_dynamic_price_slot", None)
+        if (
+            getattr(controller, "_current_price_slot_active", False)
+            and active_slot is not None
+            and getattr(controller, "_dp_deficit_reeval_active_slot", None)
+            == active_slot.start
+        ):
+            return False
+        last_at = getattr(controller, "_dp_deadline_value_reeval_at", None)
+        if last_at is not None and (now - last_at) < timedelta(
+            minutes=DEADLINE_VALUE_REEVAL_COOLDOWN_MIN
+        ):
+            return False
+        return self._deadline_at_risk_worth_serving(now)
+
     def _read_excluded_demand_claim_kwh(self) -> float | None:
         """Raw excluded-device claim reading, or None when unavailable."""
         external_loads = getattr(self._controller, "_external_loads", None)
@@ -6497,6 +6659,33 @@ class PricingManager:
                 horizon=DynamicPricingEvaluationHorizon.REMAINING,
             )
 
+        # Phase 2.8.2: Last call for a deadline the plan no longer covers. The
+        # triggers above are magnitude gates that spend a shared daily budget of
+        # 4; both can have been exhausted by the time the afternoon sun turns
+        # out weak, which is exactly when a *deadline* still has a profitable
+        # quarter left before it and no later rebuild can repair the miss. This
+        # one fires on the same deterioration but is judged by that deadline's
+        # own value_cap instead of a magnitude, and deliberately does not draw
+        # on that budget (see the predicate and the constants).
+        elif self._is_deadline_value_reeval(now):
+            self._controller._dp_deadline_value_reeval_at = now
+            active_slot = getattr(
+                self._controller, "_active_dynamic_price_slot", None
+            )
+            if getattr(self._controller, "_current_price_slot_active", False) and (
+                active_slot is not None
+            ):
+                # Same marker as the deficit trigger: a rebuild may drop the live
+                # slot, so the *charge* may be disturbed once by either trigger,
+                # never twice by the two of them together.
+                self._controller._dp_deficit_reeval_active_slot = active_slot.start
+            _LOGGER.info(
+                "Dynamic pricing: deadline still reachable at its value — re-evaluating"
+            )
+            await self._evaluate_dynamic_pricing(
+                horizon=DynamicPricingEvaluationHorizon.REMAINING,
+            )
+
         # Phase 2.9: Re-plan once tomorrow's prices are published (~13:00 CET).
         # Guarded by _current_price_slot_active (unlike the triggers above): a
         # charge already running was not invalidated by this data, so it is
@@ -6562,6 +6751,7 @@ class PricingManager:
                 self._controller._dp_solar_forecast_reeval_no_prod_date = None
                 self._controller._dp_deficit_reeval_at = None
                 self._controller._dp_deficit_reeval_active_slot = None
+                self._controller._dp_deadline_value_reeval_at = None
                 self._controller._dp_solar_forecast_reeval_at = None
                 self._controller._dp_solar_forecast_reeval_count = 0
                 self._reset_predictive_demand_runtime()

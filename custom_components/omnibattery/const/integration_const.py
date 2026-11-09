@@ -672,6 +672,20 @@ DEFICIT_REEVAL_COOLDOWN_MIN = 10     # Minimum minutes between two deficit-drive
 # number of times per day a live charge can be interrupted.
 DEFICIT_REEVAL_MAX_PER_DAY = SOLAR_FORECAST_REEVAL_MAX_PER_DAY
 
+# Peak-directed deadline re-evaluation: the two triggers above answer "how much
+# moved", this one answers "is there still a quarter that can serve a deadline
+# the plan no longer covers, and does buying for it still pay". It deliberately
+# does *not* draw on the shared daily budget above: that budget can be spent by
+# the ordinary triggers before the one firing that still has a profitable quarter
+# left before the deadline, and a missed deadline is the one thing a later
+# rebuild cannot repair (the peak quarters cost more than their own value_cap,
+# so #662 correctly refuses to buy them afterwards). What bounds it is the
+# direction it fires in: only a *rise* in the live shortfall re-arms it, and
+# every rebuild refreshes that reference, so it cannot fire twice on the same
+# deterioration.
+DEADLINE_VALUE_REEVAL_KWH = 0.2          # Rise in the live shortfall that puts a deadline at risk
+DEADLINE_VALUE_REEVAL_COOLDOWN_MIN = 10  # Minimum minutes between two deadline-driven re-evaluations
+
 # Weekday mapping (mon=0, sun=6, matches datetime.weekday())
 WEEKDAY_MAP = {
     "mon": 0, "tue": 1, "wed": 2, "thu": 3,

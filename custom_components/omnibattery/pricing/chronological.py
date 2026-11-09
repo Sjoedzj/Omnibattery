@@ -651,6 +651,45 @@ def _unclipped_room(
     return max(0.0, capacity - energy if room is None else room)
 
 
+def deadline_value_cap(
+    deadline: EnergyDeadline,
+    price_slots: Sequence[PriceSlot],
+    *,
+    import_value_efficiency: float | None,
+    import_value_margin: float,
+    priced_until: datetime | None = None,
+) -> float | None:
+    """Highest import price that still pays for energy stored for ``deadline``.
+
+    The one rule ``allocate_price_slots`` values a deadline with (#662): a slot
+    serving it may not cost more than ``price * efficiency - margin``, because
+    that is what the energy displaces when the deadline uses it.  Extracted so
+    the engine's deadline trigger asks the same question as the allocator
+    instead of re-deriving it; the allocator's own ``value_cap`` delegates here,
+    so there is exactly one implementation.
+
+    ``None`` means "no cap": the planner serves that deadline whatever the
+    import costs (a guaranteed floor, or no valuation configured at all).
+    ``_UNPRICED`` means the deadline lies past the last published price, which
+    is never worth buying for while its price is unknown.
+    """
+    # Guaranteed-floor energy is needed whatever the import costs then.
+    if import_value_efficiency is None or deadline.kind == "guaranteed_floor":
+        return None
+    served = next(
+        (
+            slot for slot in price_slots
+            if slot.start < deadline.deadline <= slot.end
+        ),
+        None,
+    )
+    if served is None:
+        if priced_until is not None and deadline.deadline > priced_until:
+            return _UNPRICED
+        return None
+    return served.price * import_value_efficiency - import_value_margin
+
+
 def allocate_price_slots(
     intervals: Iterable[EnergyInterval],
     deadlines: Iterable[EnergyDeadline],
@@ -728,21 +767,13 @@ def allocate_price_slots(
     priced_until = max((slot.end for slot in price_slots), default=None)
 
     def value_cap(deadline: EnergyDeadline) -> float | None:
-        # Guaranteed-floor energy is needed whatever the import costs then.
-        if import_value_efficiency is None or deadline.kind == "guaranteed_floor":
-            return None
-        served = next(
-            (
-                slot for slot in price_slots
-                if slot.start < deadline.deadline <= slot.end
-            ),
-            None,
+        return deadline_value_cap(
+            deadline,
+            price_slots,
+            import_value_efficiency=import_value_efficiency,
+            import_value_margin=import_value_margin,
+            priced_until=priced_until,
         )
-        if served is None:
-            if priced_until is not None and deadline.deadline > priced_until:
-                return _UNPRICED
-            return None
-        return served.price * import_value_efficiency - import_value_margin
 
     candidates = [
         slot for slot in price_slots

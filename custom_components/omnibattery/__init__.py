@@ -1209,6 +1209,7 @@ class ChargeDischargeController:
         self._dp_solar_forecast_reeval_no_prod_date = None  # day the projection-less fallback fired
         self._dp_deficit_reeval_at = None  # last deficit-driven re-evaluation (cooldown)
         self._dp_deficit_reeval_active_slot = None  # live slot a deficit rebuild may disturb once
+        self._dp_deadline_value_reeval_at = None  # last deadline-value-driven re-evaluation (cooldown)
         self._dp_price_publication_reeval_date = None  # day tomorrow's prices already triggered a replan
         self._dp_solar_forecast_reeval_at = None  # last forecast-driven re-evaluation (cooldown)
         self._dp_solar_forecast_reeval_count = 0  # forecast-driven re-evaluations today (daily cap)
