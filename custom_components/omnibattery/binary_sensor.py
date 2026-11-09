@@ -516,6 +516,7 @@ class PredictiveChargingStatusSensor(BinarySensorEntity):
         "cutoff_energy_kwh", "effective_min_soc", "avg_consumption_kwh",
         "total_available_kwh", "energy_deficit_kwh", "solar_forecast_kwh",
         "solar_surplus_kwh", "planned_grid_charge_kwh",
+        "planned_grid_charge_allocated_kwh",
         "excluded_demand_claim_kwh", "solar_available_to_battery_kwh",
         "consumption_scope", "daily_avg_consumption_kwh", "consumed_today_kwh",
         "remaining_consumption_kwh", "remaining_solar_kwh",
@@ -670,6 +671,9 @@ class PredictiveChargingStatusSensor(BinarySensorEntity):
                 "total_available_kwh": decision.get("total_available_kwh"),
                 "energy_deficit_kwh": decision.get("energy_deficit_kwh"),
                 "planned_grid_charge_kwh": decision.get("planned_grid_charge_kwh"),
+                "planned_grid_charge_allocated_kwh": decision.get(
+                    "planned_grid_charge_allocated_kwh"
+                ),
                 "solar_forecast_kwh": decision.get("solar_forecast_kwh"),
                 "solar_forecast_original_source": _chronological_value(
                     "solar_forecast_original_source"
