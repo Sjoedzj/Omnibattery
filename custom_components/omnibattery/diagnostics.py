@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, is_dataclass
-from typing import Any
+from datetime import datetime
+from typing import Any, Mapping, Sequence
 
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
@@ -622,6 +623,172 @@ def _timeline_action_counts(masks: object) -> tuple[dict[str, int], int, int]:
     return counts, double, triple
 
 
+def _charge_candidate_source(controller: object) -> dict[str, Any] | None:
+    """Return the planner's retained per-slot charge-candidate trace.
+
+    The trace is the ``charge_candidates`` block published by
+    ``PricingManager`` beside its chronological diagnostics.  A dump taken
+    before any plan exists (or with an older snapshot) simply has no block.
+    """
+    for name in ("_last_chronological_diagnostics", "_last_decision_data"):
+        container = getattr(controller, name, None)
+        if isinstance(container, dict):
+            trace = container.get("charge_candidates")
+            if isinstance(trace, dict):
+                return trace
+    return None
+
+
+def _charge_candidate_verdict(record: object) -> str | None:
+    """Return the bounded verdict string of one trace record."""
+    if not isinstance(record, dict):
+        return None
+    verdict = record.get("verdict")
+    return verdict[:48] if isinstance(verdict, str) and verdict else None
+
+
+def _charge_candidate_date(controller: object) -> str | None:
+    """Return the local date the published timeline belongs to, else ``None``."""
+    for name in ("daily_operation_timeline", "_daily_operation_timeline"):
+        manager = getattr(controller, name, None)
+        if manager is None:
+            continue
+        snapshot = manager
+        getter = getattr(manager, "snapshot", None)
+        if callable(getter):
+            try:
+                snapshot = getter()
+            except Exception:  # noqa: BLE001 - diagnostics must stay best-effort
+                continue
+        if isinstance(snapshot, dict):
+            value = snapshot.get("local_date") or snapshot.get("date")
+            if isinstance(value, str) and value:
+                return value[:10]
+    return None
+
+
+def _charge_candidate_index(start: datetime) -> int | None:
+    """Return the quarter-hour index (0-95) of a local slot start."""
+    minute_of_day = start.hour * 60 + start.minute
+    if minute_of_day % 15:
+        return None
+    index = minute_of_day // 15
+    return index if 0 <= index < 96 else None
+
+
+def _charge_candidate_record(
+    index: int, payload: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Project one raw trace record into the bounded 0-95 diagnostics record."""
+    start = payload.get("slot_start")
+    start_text = start if isinstance(start, str) else None
+    end = payload.get("slot_end")
+    end_text = end if isinstance(end, str) else None
+    verdict = payload.get("verdict")
+    return {
+        "index": index,
+        "slot_start": start_text[:32] if start_text else None,
+        "slot_end": end_text[:32] if end_text else None,
+        "price": _rounded_number(payload.get("price"), 6),
+        "ceiling": _rounded_number(payload.get("ceiling"), 6),
+        "room_kwh": _rounded_number(payload.get("room_kwh"), 3),
+        "usable_kwh": _rounded_number(payload.get("usable_kwh"), 3),
+        "free_kwh": _rounded_number(payload.get("free_kwh"), 3),
+        "blocked_kwh": _rounded_number(payload.get("blocked_kwh"), 3) or 0.0,
+        "verdict": verdict[:48] if isinstance(verdict, str) and verdict else "unknown",
+        "decided_by": (
+            payload.get("decided_by")[:48]
+            if isinstance(payload.get("decided_by"), str)
+            else None
+        ),
+    }
+
+
+def _charge_candidate_records(
+    trace: Mapping[str, Any], local_date: str | None
+) -> list[dict[str, Any]]:
+    """Return at most 96 records, projected onto the current local day."""
+    raw = trace.get("records")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    records: list[dict[str, Any]] = []
+    for payload in raw[:96]:
+        if not isinstance(payload, Mapping):
+            continue
+        start = payload.get("slot_start")
+        if not isinstance(start, str):
+            continue
+        try:
+            parsed = datetime.fromisoformat(start)
+        except ValueError:
+            continue
+        index = _charge_candidate_index(parsed)
+        if index is None:
+            continue
+        if local_date and parsed.date().isoformat() != local_date:
+            continue
+        record = _charge_candidate_record(index, payload)
+        if record is not None:
+            records.append(record)
+    records.sort(key=lambda record: record["index"])
+    return records
+
+
+def _charge_candidate_summary(
+    records: Sequence[Mapping[str, Any]],
+) -> dict[str, int]:
+    """Count the verdicts over the published records."""
+    summary: dict[str, int] = {}
+    for record in records:
+        verdict = record.get("verdict")
+        if not isinstance(verdict, str) or not verdict:
+            verdict = "unknown"
+        summary[verdict] = summary.get(verdict, 0) + 1
+    return summary
+
+
+def _charge_candidates(controller: object) -> dict[str, Any]:
+    """Publish why each quarter-hour was or was not a grid-charge candidate.
+
+    This is measurement only: the records reproduce the planner's own ceiling
+    and room rule and are bounded to 96 entries.  ``room_kwh`` (the same number
+    as ``usable_kwh``) is the largest room the rule left for that quarter and
+    ``blocked_kwh`` the energy it held back, so ``room_kwh == 0`` next to a
+    ``no_room`` verdict means the rule itself refused the quarter.  Every
+    price-like field stays ``None`` when the planner had no price for it, so a
+    missing price is never reported as a real ``0``.
+    """
+    trace = _charge_candidate_source(controller)
+    if trace is None:
+        return {
+            "available": False,
+            "date": None,
+            "records": [],
+            "summary": {},
+        }
+    local_date = _charge_candidate_date(controller)
+    records = _charge_candidate_records(trace, local_date)
+    if local_date is None:
+        dates = {
+            record["slot_start"][:10]
+            for record in records
+            if isinstance(record.get("slot_start"), str)
+        }
+        local_date = dates.pop() if len(dates) == 1 else None
+    return {
+        "available": True,
+        "date": local_date,
+        "price_unit": trace.get("price_unit"),
+        "ceiling": trace.get("ceiling"),
+        "now": trace.get("now"),
+        "horizon_end": trace.get("horizon_end"),
+        "interval_minutes": 15,
+        "record_count": len(records),
+        "records": records,
+        "summary": _charge_candidate_summary(records),
+    }
+
+
 def _daily_operation_timeline_summary(controller) -> dict[str, Any]:
     """Return bounded diagnostics for the current daily-operation snapshot.
 
@@ -684,6 +851,9 @@ def _daily_operation_timeline_summary(controller) -> dict[str, Any]:
             "last_error": str(exc)[:160],
             "setpoint": {},
             "delay": {},
+            # A failed timeline projection must not hide the candidate trace:
+            # it comes from the planner, not from the timeline manager.
+            "charge_candidates": _charge_candidates(controller),
         }
 
     setpoint = dict(payload.get("setpoint") or {})
@@ -863,6 +1033,9 @@ def _daily_operation_timeline_summary(controller) -> dict[str, Any]:
         "last_error": payload.get("last_error"),
         "setpoint": setpoint,
         "delay": delay,
+        # Per quarter-hour explanation of the grid-charge candidate filter
+        # (bounded: 96 records, never a ``series`` array).
+        "charge_candidates": _charge_candidates(controller),
         "estimated_setpoint_time": (
             setpoint.get("estimated_completion")
         ),
