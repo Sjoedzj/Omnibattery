@@ -524,6 +524,11 @@ class PredictiveChargingStatusSensor(BinarySensorEntity):
         "energy_deadlines", "slot_energy_targets_kwh", "slot_deadlines",
         "decision_reason", "solar_forecast_periods",
         "energy_horizon_end", "overnight_consumption_kwh",
+        # Per-quarter diagnostic traces: nested structures that change on every
+        # rebuild, read live by the panel and the diagnostics download, never
+        # from recorder history (#850). Excluded here for the same reason as the
+        # timeline sensor's ``series`` and ``operations``.
+        "charge_candidates", "discharge_decisions",
     })
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, controller) -> None:
