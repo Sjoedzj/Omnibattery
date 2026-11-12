@@ -101,12 +101,12 @@ class EnergyInterval:
             else self.solar_kwh
         )
         return EnergyInterval(
-            self.start,
-            self.end,
-            0.0,
-            max(0.0, self.solar_kwh - self.consumption_kwh),
-            demand,
-            published_solar,
+            start=self.start,
+            end=self.end,
+            consumption_kwh=0.0,
+            solar_kwh=max(0.0, self.solar_kwh - self.consumption_kwh),
+            demand_kwh=demand,
+            solar_publication_kwh=published_solar,
         )
 
 
