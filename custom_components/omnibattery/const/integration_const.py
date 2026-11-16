@@ -1098,10 +1098,22 @@ DEFAULT_SURPLUS_HOLD_MIN_SAVING = 0.02
 CONF_DISCHARGE_RESERVE_ENABLED = "discharge_reserve_enabled"
 DEFAULT_DISCHARGE_RESERVE_ENABLED = False
 # Advantage (currency/kWh) a later hour must have over the current one before
-# its demand may claim stored energy.  Keeps the floor from chattering on
-# rounding differences, and prices in the wear of the extra cycle.
+# its demand may claim stored energy.  This is a *deferral* threshold, not a
+# cycling one: the energy is already in the battery, so holding it for a dearer
+# hour adds no charge/discharge cycle and the wear argument does not apply here.
+# It therefore defaults to 0, which makes the reserve a pure merit order — the
+# dearest hours claim first, each bounded by its own demand, until the usable
+# energy is gone.
+#
+# A positive value deliberately leaks the low end of a rising ramp: the bar
+# moves with the current price, so quarters only a cent or two dearer than now
+# never qualify.  Measured 2026-11-16 on a smoothly climbing evening (about 1 ct
+# per quarter, 40.5 ct at 15:45 rising to a 46.1 ct peak at 19:00): with 0.05 the
+# floor released from ~41 ct and the battery was spent on the way up, reserving
+# only the last three quarters.  With 0 it held for the whole ramp and emptied
+# on the peak.  Raise it only if the floor is seen chattering on rounding noise.
 CONF_DISCHARGE_RESERVE_MIN_SAVING = "discharge_reserve_min_saving"
-DEFAULT_DISCHARGE_RESERVE_MIN_SAVING = 0.05
+DEFAULT_DISCHARGE_RESERVE_MIN_SAVING = 0.0
 
 # Deliberate export into a price peak (#270).  Sells only energy that a later,
 # dearer hour would otherwise buy from the grid, so the house never ends up

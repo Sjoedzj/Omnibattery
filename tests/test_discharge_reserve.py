@@ -1641,3 +1641,41 @@ def test_without_an_extended_horizon_a_dull_tomorrow_keeps_sunrise():
     manager = _full_day_manager(_periods(TOMORROW, DULL_DAY), extended=None)
 
     assert manager.plan.horizon_end == TOMORROW_SUNRISE
+
+
+def test_a_smoothly_rising_peak_is_reserved_in_merit_order_not_leaked():
+    """The 2026-11-16 evening, which the reserve spent on the way up.
+
+    Prices climbed about 1 ct per quarter from 40.5 ct at 15:45 to a 46.1 ct
+    peak at 19:00.  The threshold is ``current_price + min_saving``, so with a
+    5 ct margin the bar rose with the price and no quarter of the ramp ever
+    cleared it: the floor released from ~41 ct, the battery was spent along the
+    ramp, and only the last three quarters stayed reserved.
+
+    The margin is a *deferral* threshold, and the energy is already in the
+    battery — holding it for a dearer hour adds no cycle, so the wear argument
+    that justifies a margin on charging does not apply.  At 0 the reserve is the
+    merit order a battery is supposed to follow: dearest first, each claim
+    bounded by its own demand, until the usable energy is gone.
+    """
+    from custom_components.omnibattery.pricing.discharge_reserve import (
+        plan_discharge_reserve,
+    )
+
+    ramp = [_slot(hour, round(0.405 + 0.010 * index, 4)) for index, hour in enumerate(range(16, 22))]
+    demand = {slot: 0.5 for slot in ramp}
+    common = dict(
+        usable_energy_kwh=6.0,
+        total_capacity_kwh=10.24,
+        current_price=0.40,
+        now=DAY + timedelta(hours=15),
+    )
+
+    # A 1 ct ramp never clears a 5 ct bar: only the 45.5 ct top quarter claims.
+    with_margin = plan_discharge_reserve(ramp, demand, min_saving=0.05, **common)
+    assert with_margin.reserve_kwh == pytest.approx(0.5)
+
+    # At 0 every dearer quarter claims, bounded by the demand it serves.
+    merit_order = plan_discharge_reserve(ramp, demand, min_saving=0.0, **common)
+    assert merit_order.reserve_kwh == pytest.approx(3.0)
+
