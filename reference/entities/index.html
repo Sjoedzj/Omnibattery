@@ -29,7 +29,7 @@
       
       
       <link rel="icon" href="../../assets/logo.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
     
     
       
@@ -37,10 +37,10 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.57a0d79d.min.css">
       
         
-        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.fb2fffe2.min.css">
       
       
 
@@ -1072,6 +1072,34 @@
     
   
     Sessy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../configuration/batteries/indevolt/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Indevolt
   
 
     
@@ -2992,7 +3020,7 @@
 <tr>
 <td><strong>System SOC</strong></td>
 <td><code>sensor.omnibattery_system_soc</code></td>
-<td>Combined state of charge (SOC)</td>
+<td>Combined state of charge (SOC) of the batteries under automatic control (all of them if every battery is in manual mode)</td>
 </tr>
 <tr>
 <td><strong>System Charge Power</strong></td>
@@ -3148,7 +3176,7 @@
 <summary>System switches</summary>
 <ul>
 <li>Always available controller choices: <code>manual_mode</code>, <code>no_pd_mode</code>, <code>three_phase_protection</code>, <code>weekly_full_charge_enabled</code>, <code>vacation_mode</code></li>
-<li>Conditional features: <code>offgrid_mode</code>, <code>primary_feedforward</code>, <code>system_power_limits</code>, <code>predictive_charging</code>, <code>min_soc_floor_enabled</code>, <code>charge_delay</code>, <code>delay_soc_setpoint_enabled</code>, <code>weekly_full_charge_delay</code>, <code>temp_charge_limit</code>, <code>temp_charge_limit_discharge</code>, <code>capacity_protection</code>, <code>capacity_protection_excluded_devices</code>, <code>hourly_balance</code></li>
+<li>Conditional features: <code>offgrid_mode</code>, <code>primary_feedforward</code>, <code>system_power_limits</code>, <code>predictive_charging</code>, <code>predictive_charging_notifications</code>, <code>min_soc_floor_enabled</code>, <code>charge_delay</code>, <code>delay_soc_setpoint_enabled</code>, <code>weekly_full_charge_delay</code>, <code>temp_charge_limit</code>, <code>temp_charge_limit_discharge</code>, <code>capacity_protection</code>, <code>capacity_protection_excluded_devices</code>, <code>hourly_balance</code></li>
 <li>Pricing controls: <code>price_discharge_control</code>, <code>smart_predischarge</code>, <code>negative_price_charging</code>, <code>surplus_price_hold</code>, <code>discharge_reserve</code></li>
 <li>Generated controls: <code>time_slot</code> for each configured time slot; <code>excluded_device_enabled</code>, <code>excluded_device_solar_surplus</code>, <code>excluded_device_dynamic_power_control</code>, and <code>excluded_device_cover_home</code> for each applicable excluded device</li>
 <li>External automation compatibility: <code>automation_charging_active</code></li>
@@ -3367,7 +3395,7 @@
 <details>
 <summary>Predictive Charging Active attributes</summary>
 <p>Common attributes include <code>charging_needed</code>, <code>reason</code>, <code>price_data_status</code>, forecast and consumption values, selected price slots, target energy, and current progress.</p>
-<p>Dynamic Pricing can also expose <code>chronological_planning_active</code>, <code>energy_horizon_end</code>, <code>overnight_consumption_kwh</code>, <code>earliest_projected_depletion</code>, <code>deadline_shortfall_kwh</code>, <code>energy_deadlines</code>, <code>slot_deadlines</code>, and <code>chronological_plan_reason</code>. They describe planning intent; live battery, grid, and safety limits remain authoritative.</p>
+<p>Dynamic Pricing can also expose <code>chronological_planning_active</code>, <code>energy_horizon_end</code>, <code>overnight_consumption_kwh</code>, <code>earliest_projected_depletion</code>, <code>deadline_shortfall_kwh</code>, <code>cheaper_to_import_kwh</code>, <code>cheapest_rejected_slot</code>, <code>energy_deadlines</code>, <code>slot_deadlines</code>, and <code>chronological_plan_reason</code>. The diagnostics also expose <code>round_trip_efficiency_used</code> and <code>round_trip_efficiency_source</code> (<code>configured</code>, <code>measured</code> or <code>default</code>). They describe planning intent; live battery, grid, and safety limits remain authoritative.</p>
 </details>
 <details>
 <summary>High-Price Sale Status attributes</summary>
@@ -3540,10 +3568,10 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "content.tabs.link", "content.code.annotate", "content.code.copy", "content.action.edit"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "content.tabs.link", "content.code.annotate", "content.code.copy", "content.action.edit"], "search": "../../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
     
     
-      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      <script src="../../assets/javascripts/bundle.a5f9d56c.min.js"></script>
       
     
   </body>

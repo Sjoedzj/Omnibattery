@@ -29,7 +29,7 @@
       
       
       <link rel="icon" href="../../../../assets/logo.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
     
     
       
@@ -37,10 +37,10 @@
       
     
     
-      <link rel="stylesheet" href="../../../../assets/stylesheets/main.ec1eaa64.min.css">
+      <link rel="stylesheet" href="../../../../assets/stylesheets/main.57a0d79d.min.css">
       
         
-        <link rel="stylesheet" href="../../../../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../../../assets/stylesheets/palette.fb2fffe2.min.css">
       
       
 
@@ -1101,6 +1101,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../batteries/indevolt/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Indevolt
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../batteries/hoymiles/" class="md-nav__link">
         
   
@@ -1547,6 +1575,17 @@
     <span class="md-ellipsis">
       
         Evaluación y cuotas
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#suelo-de-la-ventana" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Suelo de la ventana
       
     </span>
   </a>
@@ -2962,6 +3001,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#suelo-de-la-ventana" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Suelo de la ventana
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#disparadores-de-reevaluacion" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3034,6 +3084,12 @@
 <p><img alt="Configura ventanas fijas de carga predictiva" src="../../../../assets/screenshots/configuration/predictive-charging/time-slot-form.png" style="display: block; margin: 0 auto;" width="650" /></p>
 <h2 id="que-veras">Qué verás<a class="headerlink" href="#que-veras" title="Permanent link">&para;</a></h2>
 <p>Al inicio de una ventana activa, Omnibattery comprueba el balance energético restante y asigna una cuota a esa ventana. Puede repartir la energía necesaria entre varias ventanas, de forma que la primera no consume automáticamente todo el objetivo diario flexible. La carga se detiene cuando se almacena la cuota o termina la ventana.</p>
+<p>Dentro de una ventana, la red cubre la casa a precio barato, así que la batería guarda la energía que necesita para las horas posteriores a la ventana:</p>
+<ul>
+<li><strong>La ventana carga:</strong> la batería carga su cuota y después se queda parada hasta que termina la ventana. Nunca carga para descargar en la misma ventana, porque solo perdería la ida y vuelta.</li>
+<li><strong>No hace falta cargar:</strong> la batería descarga con normalidad, pero solo hasta la energía que necesita después de la ventana. A partir de ahí la red cubre la casa hasta que termina la ventana.</li>
+</ul>
+<p>Por eso la cuota cubre solo la demanda posterior a la ventana, no el consumo de la casa durante ella. La <a href="../../../features/weekly-full-charge/">carga completa semanal</a> mantiene su propio comportamiento.</p>
 <p><strong>Carga predictiva activa</strong> muestra la decisión y cualquier energía no cubierta. <strong>Reevaluar carga predictiva</strong> fuerza una decisión nueva en el siguiente ciclo de control mientras hay una ventana configurada activa. Fuera de una ventana, el botón invalida la referencia antigua para la siguiente ventana, pero no evalúa inmediatamente ni inicia carga.</p>
 <p>El plan se adapta dentro de una ventana activa cuando el SOC cambia de forma importante, se cruza o recupera el suelo garantizado, el proveedor revisa la previsión solar, cambia un ajuste de batería o previsión relevante, o la <a href="../../../features/peak-shaving/">protección de capacidad</a> modifica la potencia disponible para el plan.</p>
 <h2 id="si-no-funciona">Si no funciona<a class="headerlink" href="#si-no-funciona" title="Permanent link">&para;</a></h2>
@@ -3072,6 +3128,11 @@
 <td>Duración de ventana, límites de carga, capacidad de batería y bloqueos activos</td>
 </tr>
 <tr>
+<td>La batería deja de descargar durante una ventana</td>
+<td>Ha llegado a la energía que necesita después de la ventana; la red cubre la casa hasta que termina</td>
+<td><code>time_slot_floor_kwh</code> en <strong>Carga predictiva activa</strong> y el bloqueo de descarga <code>time_slot_floor_hold</code></td>
+</tr>
+<tr>
 <td>Pulsar reevaluar no hace nada</td>
 <td>El botón se pulsó fuera de una ventana activa</td>
 <td>Púlsalo durante una ventana configurada; fuera de ella prepara la siguiente entrada</td>
@@ -3084,6 +3145,8 @@
 <p>Al entrar en una ventana, Omnibattery evalúa inmediatamente cuando no hay previsión solar configurada o la previsión configurada es legible. Si la previsión no está disponible temporalmente, reintenta durante un periodo de gracia de cinco minutos; después evalúa de forma conservadora con solar cero.</p>
 <p>El planificador simula consumo, solar y energía utilizable de batería en intervalos de 15 minutos hasta medianoche. La energía necesaria antes de un cruce previsto del SOC mínimo se asigna solo a ventanas que pueden entregarla a tiempo. La energía posterior se distribuye entre las ventanas configuradas restantes. Si ninguna ventana puede cumplir un plazo, los kWh no cubiertos se informan como déficit no cubierto en vez de asignarse a una ventana demasiado tardía.</p>
 <p>Cada ventana recibe su propia cuota en kWh. La carga se detiene cuando la batería en vivo alcanza esa cuota o termina la ventana. Una cuota suspendida permanece vinculada al plan y se reconstruye desde el SOC en vivo cuando la carga puede continuar.</p>
+<h3 id="suelo-de-la-ventana">Suelo de la ventana<a class="headerlink" href="#suelo-de-la-ventana" title="Permanent link">&para;</a></h3>
+<p>El planificador trata cada ventana configurada como un periodo con la batería parada: el consumo de la casa dentro de ella queda a cargo de la red y no forma parte de ninguna cuota. En cada evaluación la ventana recibe un suelo, la energía almacenada con la que debe terminar. Si la ventana carga, el suelo es la energía actual más la cuota. Si no, es la energía actual menos el punto más bajo de la proyección sin carga de red, es decir, la energía que sobra hasta la siguiente ventana. Mientras la energía almacenada esté en el suelo o por debajo, el bloqueo de descarga <code>time_slot_floor_hold</code> mantiene la batería parada. La protección de capacidad puede seguir descargando. El suelo se borra al terminar la ventana y no se usa durante una carga completa semanal.</p>
 <h3 id="disparadores-de-reevaluacion">Disparadores de reevaluación<a class="headerlink" href="#disparadores-de-reevaluacion" title="Permanent link">&para;</a></h3>
 <p>Dentro de una ventana de carga activa, el balance se reconsidera cuando:</p>
 <ul>
@@ -3225,10 +3288,10 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "../../../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "content.tabs.link", "content.code.annotate", "content.code.copy", "content.action.edit"], "search": "../../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copiado al portapapeles", "clipboard.copy": "Copiar al portapapeles", "search.result.more.one": "1 m\u00e1s en esta p\u00e1gina", "search.result.more.other": "# m\u00e1s en esta p\u00e1gina", "search.result.none": "No se encontraron documentos", "search.result.one": "1 documento encontrado", "search.result.other": "# documentos encontrados", "search.result.placeholder": "Teclee para comenzar b\u00fasqueda", "search.result.term.missing": "Falta", "select.version": "Seleccionar versi\u00f3n"}, "version": {"provider": "mike"}}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "content.tabs.link", "content.code.annotate", "content.code.copy", "content.action.edit"], "search": "../../../../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copiado al portapapeles", "clipboard.copy": "Copiar al portapapeles", "search.result.more.one": "1 m\u00e1s en esta p\u00e1gina", "search.result.more.other": "# m\u00e1s en esta p\u00e1gina", "search.result.none": "No se encontraron documentos", "search.result.one": "1 documento encontrado", "search.result.other": "# documentos encontrados", "search.result.placeholder": "Teclee para comenzar b\u00fasqueda", "search.result.term.missing": "Falta", "select.version": "Seleccionar versi\u00f3n"}, "version": {"provider": "mike"}}</script>
     
     
-      <script src="../../../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      <script src="../../../../assets/javascripts/bundle.a5f9d56c.min.js"></script>
       
     
   </body>

@@ -29,7 +29,7 @@
       
       
       <link rel="icon" href="../../assets/logo.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
     
     
       
@@ -37,10 +37,10 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.57a0d79d.min.css">
       
         
-        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.fb2fffe2.min.css">
       
       
 
@@ -1072,6 +1072,34 @@
     
   
     Sessy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../configuration/batteries/indevolt/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Indevolt
   
 
     
@@ -2404,6 +2432,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#backup-reserve-for-power-outages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backup reserve for power outages
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -2986,6 +3025,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#backup-reserve-for-power-outages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backup reserve for power outages
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -3083,6 +3133,7 @@
 <li><strong>Does not do:</strong> overwrite a later manual change or a different automation's target — it only restores the idle target when the recharge target it set is still in place.</li>
 </ul>
 <p>Configure the SOC floor, a higher SOC recovery target, charge power, and idle target. It restores the idle target when SOC reaches the recovery target or capacity protection ends.</p>
+<p>The grid target is the total import, not the charge power: the battery charges with the target minus the house load, and does not charge while the house draws more than the target. Setting it to your Peak Limit charges whatever fits under the peak. System SOC counts only batteries under automatic control, so a battery in manual mode (for example balancing) does not hold it up.</p>
 <h2 id="forward-persistent-notifications-to-telegram">Forward persistent notifications to Telegram<a class="headerlink" href="#forward-persistent-notifications-to-telegram" title="Permanent link">&para;</a></h2>
 <p><a href="https://raw.githubusercontent.com/ffunes/Omnibattery/main/blueprints/persistent_notification_to_telegram_blueprint.yaml">Import blueprint</a></p>
 <ul>
@@ -3103,6 +3154,7 @@
 <li><strong>Does not do:</strong> touch battery alarms, cell-balance messages, or manual-mode notifications — only predictive-charging notifications are dismissed.</li>
 </ul>
 <p>The notification may be visible briefly before Home Assistant executes the automation. Disable the automation at any time to receive predictive-charging notifications again.</p>
+<p>To stop these notifications at the source instead, turn off the <strong>Predictive Charging Notifications</strong> switch; see <a href="../../configuration/predictive-charging/">Predictive charging</a>.</p>
 <h2 id="solar-forecast-reserve-discharge">Solar forecast reserve discharge<a class="headerlink" href="#solar-forecast-reserve-discharge" title="Permanent link">&para;</a></h2>
 <p><a href="https://raw.githubusercontent.com/ffunes/Omnibattery/main/blueprints/solar_forecast_reserve_discharge_blueprint.yaml">Import blueprint</a></p>
 <ul>
@@ -3117,6 +3169,16 @@
 <summary>Advanced details</summary>
 <p>The calculation includes a fixed 78% charge-efficiency assumption and the safety margin.</p>
 </details>
+<h2 id="backup-reserve-for-power-outages">Backup reserve for power outages<a class="headerlink" href="#backup-reserve-for-power-outages" title="Permanent link">&para;</a></h2>
+<p><a href="https://raw.githubusercontent.com/ffunes/Omnibattery/main/blueprints/backup_reserve_discharge_blueprint.yaml">Import blueprint</a></p>
+<ul>
+<li><strong>Purpose:</strong> keeps a fixed SOC reserve (for example 90% in winter) for power outages, above the battery's own minimum-SOC limit.</li>
+<li><strong>Requires:</strong> the Allow Discharge switches to control and the system SOC sensor. Optionally, binary sensors that are ON during a grid outage.</li>
+<li><strong>Controls:</strong> the selected <strong>Allow Discharge</strong> switches only.</li>
+<li><strong>Compatible with:</strong> any installation.</li>
+<li><strong>Does not do:</strong> write Modbus registers, force battery modes or block charging. Solar and grid charging refill the reserve normally.</li>
+</ul>
+<p>Discharge stops when SOC falls to the reserve and resumes once SOC rises above the reserve plus the hysteresis. While any outage sensor is ON, discharge is allowed. When you no longer want the reserve, disable the automation and turn the Allow Discharge switches back on.</p>
 
 
 
@@ -3241,10 +3303,10 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "content.tabs.link", "content.code.annotate", "content.code.copy", "content.action.edit"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "content.tabs.link", "content.code.annotate", "content.code.copy", "content.action.edit"], "search": "../../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
     
     
-      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      <script src="../../assets/javascripts/bundle.a5f9d56c.min.js"></script>
       
     
   </body>
